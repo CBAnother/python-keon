@@ -1,1 +1,1 @@
-from . import os, vpn
+from . import os, vpn, network
