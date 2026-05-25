@@ -118,3 +118,18 @@ def print_dir_tree(
         pyperclip.copy(text)
     
     print(text)
+
+
+def rel_path(path, start=None, as_posix=False):
+    """
+    生成相对路径
+
+    Args:
+        path (str): 路径
+        start (str): 起始路径
+        as_posix (bool): 是否返回 POSIX 风格的路径
+    """
+    res = os.path.relpath(path, start)
+    if as_posix:
+        res = res.replace('\\', '/')
+    return res
