@@ -17,6 +17,7 @@ import urllib.parse
 import urllib.request
 
 import pandas as pd
+import requests
 
 def _parse_ports(ports):
     """
@@ -951,6 +952,85 @@ def print_ip_lookup_table(info, file=None):
         print(f"{_pad_display_text(name, width)} : {value}", file=file)
 
 
+_GLOBAL_IP_APIS = [
+    "https://api.ipify.org",
+    "https://ifconfig.me/ip",
+    "https://icanhazip.com",
+]
+
+_CN_IP_APIS = [
+    "https://4.ipw.cn",
+    "https://myip.ipip.net",
+]
+
+
+def _extract_ipv4(text: str) -> Optional[str]:
+    """
+    Extract the first valid IPv4 address from text.
+
+    Args:
+        text: Text that may contain an IPv4 address.
+
+    Returns:
+        Optional[str]: IPv4 address if found, otherwise None.
+    """
+    m = re.search(r"(\d{1,3}(?:\.\d{1,3}){3})", text)
+    if not m:
+        return None
+
+    ip = m.group(1)
+
+    # 简单校验 0-255
+    parts = ip.split(".")
+    if all(0 <= int(part) <= 255 for part in parts):
+        return ip
+
+    return None
+
+
+def get_public_ip(prefer_cn: bool = False, timeout=(2, 3)) -> dict[str, str]:
+    """
+    Query the current machine's public IPv4 address.
+
+    Args:
+        prefer_cn: Whether to try China-friendly query APIs first.
+        timeout: Timeout passed to requests.get.
+
+    Returns:
+        dict: Query result containing ip, source, and raw response text.
+    """
+    if prefer_cn:
+        apis = _CN_IP_APIS + _GLOBAL_IP_APIS
+    else:
+        apis = _GLOBAL_IP_APIS + _CN_IP_APIS
+
+    errors = []
+
+    for url in apis:
+        try:
+            r = requests.get(
+                url,
+                timeout=timeout,
+                headers={"User-Agent": "curl/8.0"},
+            )
+            r.raise_for_status()
+
+            ip = _extract_ipv4(r.text.strip())
+            if ip:
+                return {
+                    "ip": ip,
+                    "source": url,
+                    "raw": r.text.strip(),
+                }
+
+            errors.append((url, "no valid IPv4 found"))
+
+        except requests.RequestException as e:
+            errors.append((url, repr(e)))
+
+    raise RuntimeError(f'All public IP query APIs failed: {errors}')
+
+
 # endregion IP 
 
 
@@ -961,4 +1041,5 @@ __all__ = [
     "IpLookupResult",
     "lookup_ip",
     "print_ip_lookup_table",
+    "get_public_ip",
 ]
