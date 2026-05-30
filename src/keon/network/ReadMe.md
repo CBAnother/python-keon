@@ -16,3 +16,27 @@ ps.scan()
  ('192.168.4.229', 3389)]
 ```
 
+
+
+
+
+# Linux
+
+## 格式化 last 输出
+
+在 linux 执行 `last -F` 之后，有时想做一些解析，可以使用函数 `parse_last_output` 实现
+
+例如：先输出到 txt 中
+
+```
+last -F > last.txt
+```
+
+解析
+
+```python
+df = parse_last_output(Path("last.txt").read_text(encoding="utf-8"))
+```
+
+
+

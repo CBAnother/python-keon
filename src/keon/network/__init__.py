@@ -1,10 +1,13 @@
 """网络工具模块，提供端口扫描等功能。"""
+from datetime import datetime, timedelta
+from pathlib import Path
+from queue import Queue
+import ipaddress
+import re
 import socket
 import threading
-import ipaddress
-from queue import Queue
-from datetime import datetime
 
+import pandas as pd
 
 def _parse_ports(ports):
     """
@@ -219,3 +222,327 @@ class PortScanner:
         print(f"{'='*60}\n")
         
         return self.open_results
+
+
+
+_MONTHS = {
+    "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4,
+    "May": 5, "Jun": 6, "Jul": 7, "Aug": 8,
+    "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12,
+}
+
+
+def _parse_duration(duration_raw):
+    if not duration_raw:
+        return pd.NaT
+
+    duration_raw = duration_raw.strip().strip("()")
+
+    # 支持：
+    # 01:01
+    # 56+08:22
+    m = re.fullmatch(r"(?:(\d+)\+)?(\d{1,2}):(\d{2})", duration_raw)
+    if not m:
+        return pd.NaT
+
+    days = int(m.group(1) or 0)
+    hours = int(m.group(2))
+    minutes = int(m.group(3))
+
+    return pd.Timedelta(days=days, hours=hours, minutes=minutes)
+
+
+def _parse_date_tokens(tokens, idx):
+    """
+    兼容两种格式：
+
+    短格式：
+        Mon Nov 24 15:20
+
+    完整格式：
+        Mon Nov 24 15:20:53 2025
+    """
+    if idx + 3 >= len(tokens):
+        return None, idx
+
+    weekday = tokens[idx]
+    month = tokens[idx + 1]
+    day = int(tokens[idx + 2])
+    time_raw = tokens[idx + 3]
+
+    # 完整格式：Mon Nov 24 15:20:53 2025
+    if idx + 4 < len(tokens) and re.fullmatch(r"\d{4}", tokens[idx + 4]):
+        year = int(tokens[idx + 4])
+
+        if re.fullmatch(r"\d{1,2}:\d{2}:\d{2}", time_raw):
+            fmt = "%a %b %d %H:%M:%S %Y"
+        else:
+            fmt = "%a %b %d %H:%M %Y"
+
+        dt = datetime.strptime(
+            f"{weekday} {month} {day} {time_raw} {year}",
+            fmt
+        )
+
+        return {
+            "weekday": weekday,
+            "month": month,
+            "day": day,
+            "time_raw": time_raw,
+            "year": year,
+            "dt": dt,
+            "is_full_date": True,
+        }, idx + 5
+
+    # 短格式：Mon Nov 24 15:20
+    return {
+        "weekday": weekday,
+        "month": month,
+        "day": day,
+        "time_raw": time_raw,
+        "year": None,
+        "dt": None,
+        "is_full_date": False,
+    }, idx + 4
+
+
+def _parse_last_line(line):
+    line = line.rstrip("\n")
+    if not line.strip():
+        return None
+
+    # 取出最后的 duration，例如 (01:01)、(56+08:22)
+    duration_raw = None
+    duration_match = re.search(r"\(([^)]+)\)\s*$", line)
+    if duration_match:
+        duration_raw = duration_match.group(1)
+        line_without_duration = line[:duration_match.start()].rstrip()
+    else:
+        line_without_duration = line
+
+    tokens = line_without_duration.split()
+    if len(tokens) < 7:
+        return None
+
+    user = tokens[0]
+
+    # reboot 行：
+    # reboot system boot 6.8.0-49-generic Mon Jan 20 18:49 still running
+    if user == "reboot" and len(tokens) >= 8 and tokens[1] == "system" and tokens[2] == "boot":
+        tty = "system boot"
+        host = tokens[3]      # kernel version
+        date_idx = 4
+    else:
+        tty = tokens[1]
+        host = tokens[2]
+        date_idx = 3
+
+    start_info, next_idx = _parse_date_tokens(tokens, date_idx)
+    if not start_info:
+        return None
+
+    rest_tokens = tokens[next_idx:]
+
+    status = None
+    logout_raw = None
+    end_info = None
+
+    if not rest_tokens:
+        status = None
+
+    elif rest_tokens[0] == "-":
+        after_dash = rest_tokens[1:]
+
+        # 完整结束时间：
+        # - Mon Nov 24 16:21:53 2025
+        possible_end, consumed_idx = _parse_date_tokens(after_dash, 0)
+
+        if possible_end and possible_end["is_full_date"]:
+            end_info = possible_end
+            logout_raw = possible_end["time_raw"]
+            status = "closed"
+
+        elif after_dash:
+            # 短结束时间：
+            # - 16:21
+            # - down
+            logout_raw = after_dash[0]
+
+            if re.fullmatch(r"\d{1,2}:\d{2}(:\d{2})?", logout_raw):
+                status = "closed"
+            else:
+                status = logout_raw
+
+    elif rest_tokens[0] == "still":
+        # still logged in / still running
+        status = " ".join(rest_tokens)
+
+    else:
+        status = " ".join(rest_tokens)
+
+    return {
+        "user": user,
+        "tty": tty,
+        "host": host,
+
+        "weekday": start_info["weekday"],
+        "month": start_info["month"],
+        "day": start_info["day"],
+        "start_time_raw": start_info["time_raw"],
+        "year": start_info["year"],
+        "start_dt": start_info["dt"],
+        "start_is_full_date": start_info["is_full_date"],
+
+        "logout_raw": logout_raw,
+        "end_dt": end_info["dt"] if end_info else None,
+        "end_is_full_date": bool(end_info and end_info["is_full_date"]),
+
+        "status": status,
+        "duration_raw": duration_raw,
+        "duration": _parse_duration(duration_raw),
+        "raw": line,
+    }
+
+
+def _infer_missing_datetimes(df, newest_year=None):
+    """
+    对短格式补年份：
+
+    如果行本身已经有完整年份，就直接使用。
+    如果没有年份，则根据 last 输出的倒序特征推断年份。
+    """
+    if df.empty:
+        return df
+
+    if newest_year is None:
+        newest_year = datetime.now().year
+
+    result_rows = []
+    prev_start_dt = None
+
+    for _, row in df.iterrows():
+        row = row.copy()
+
+        # start_dt 已经完整，例如 last -F 输出
+        if pd.notna(row["start_dt"]):
+            start_dt = row["start_dt"].to_pydatetime() if hasattr(row["start_dt"], "to_pydatetime") else row["start_dt"]
+            year = start_dt.year
+
+        else:
+            # 短格式，推断 year
+            base_year = prev_start_dt.year if prev_start_dt is not None else newest_year
+
+            month_num = _MONTHS[row["month"]]
+            day = int(row["day"])
+
+            time_parts = [int(x) for x in row["start_time_raw"].split(":")]
+            hour = time_parts[0]
+            minute = time_parts[1]
+            second = time_parts[2] if len(time_parts) >= 3 else 0
+
+            year = base_year
+
+            while True:
+                start_dt = datetime(year, month_num, day, hour, minute, second)
+
+                # last 输出通常是从新到旧
+                if prev_start_dt is None or start_dt <= prev_start_dt:
+                    break
+
+                year -= 1
+
+            row["year"] = year
+            row["start_dt"] = start_dt
+
+        prev_start_dt = start_dt
+
+        # 处理 end_dt
+        if pd.notna(row["end_dt"]):
+            # 完整结束时间已经解析好了
+            pass
+
+        elif isinstance(row["logout_raw"], str) and re.fullmatch(r"\d{1,2}:\d{2}(:\d{2})?", row["logout_raw"]):
+            # 短格式结束时间，例如 - 16:21
+            time_parts = [int(x) for x in row["logout_raw"].split(":")]
+            hour = time_parts[0]
+            minute = time_parts[1]
+            second = time_parts[2] if len(time_parts) >= 3 else 0
+
+            if pd.notna(row["duration"]):
+                # 用 duration 推断结束日期，再用 logout_raw 修正时分秒
+                end_date = (start_dt + row["duration"]).date()
+                row["end_dt"] = datetime.combine(end_date, datetime.min.time()).replace(
+                    hour=hour,
+                    minute=minute,
+                    second=second,
+                )
+            else:
+                end_dt = start_dt.replace(hour=hour, minute=minute, second=second)
+
+                if end_dt < start_dt:
+                    end_dt += timedelta(days=1)
+
+                row["end_dt"] = end_dt
+
+        elif pd.notna(row["duration"]):
+            # 例如 - down (00:02)，没有具体结束时间，只能用 duration 推
+            row["end_dt"] = start_dt + row["duration"]
+
+        else:
+            # still logged in / still running
+            row["end_dt"] = pd.NaT
+
+        result_rows.append(row)
+
+    out = pd.DataFrame(result_rows)
+    out["start_dt"] = pd.to_datetime(out["start_dt"], errors="coerce")
+    out["end_dt"] = pd.to_datetime(out["end_dt"], errors="coerce")
+
+    return out
+
+
+def parse_last_output(text, newest_year=None):
+    """
+    Parse the output of the `last` command into a structured DataFrame.
+
+    linux run: last -F > last.txt
+    df = parse_last_output(Path("last.txt").read_text(encoding="utf-8"))
+    """
+    rows = []
+
+    for line in text.splitlines():
+        row = _parse_last_line(line)
+        if row:
+            rows.append(row)
+
+    df = pd.DataFrame(rows)
+
+    if df.empty:
+        return df
+
+    df = _infer_missing_datetimes(df, newest_year=newest_year)
+
+    return df[
+        [
+            "user",
+            "tty",
+            "host",
+            "year",
+            "weekday",
+            "month",
+            "day",
+            "start_time_raw",
+            "logout_raw",
+            "status",
+            "duration_raw",
+            "duration",
+            "start_dt",
+            "end_dt",
+            "raw",
+        ]
+    ]
+
+
+
+
+__all__ = ["PortScanner", "parse_last_output"]

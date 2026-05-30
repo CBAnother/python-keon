@@ -16,6 +16,7 @@ classifiers = [
 ]
 dependencies = [
   'pyperclip',
+  'pandas',
 ]
 
 [tool.setuptools.packages.find]
