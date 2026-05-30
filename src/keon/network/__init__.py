@@ -1,11 +1,20 @@
 """网络工具模块，提供端口扫描等功能。"""
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from queue import Queue
+from typing import Any, Optional
+import argparse
 import ipaddress
+import json
 import re
 import socket
+import sys
 import threading
+import unicodedata
+import urllib.error
+import urllib.parse
+import urllib.request
 
 import pandas as pd
 
@@ -233,6 +242,15 @@ _MONTHS = {
 
 
 def _parse_duration(duration_raw):
+    """
+    Parse a `last` duration string into a pandas Timedelta.
+
+    Args:
+        duration_raw: Duration text, such as "01:01" or "56+08:22".
+
+    Returns:
+        pandas.Timedelta: Parsed duration, or pandas.NaT if parsing fails.
+    """
     if not duration_raw:
         return pd.NaT
 
@@ -307,6 +325,15 @@ def _parse_date_tokens(tokens, idx):
 
 
 def _parse_last_line(line):
+    """
+    Parse one line from the `last` command output.
+
+    Args:
+        line: A single raw line from `last` output.
+
+    Returns:
+        dict | None: Parsed login record, or None if the line is not a record.
+    """
     line = line.rstrip("\n")
     if not line.strip():
         return None
@@ -507,6 +534,13 @@ def parse_last_output(text, newest_year=None):
 
     linux run: last -F > last.txt
     df = parse_last_output(Path("last.txt").read_text(encoding="utf-8"))
+
+    Args:
+        text: Raw text output from the `last` command.
+        newest_year: Year used to infer dates when `last` output omits the year.
+
+    Returns:
+        pandas.DataFrame: Parsed login records.
     """
     rows = []
 
@@ -544,5 +578,387 @@ def parse_last_output(text, newest_year=None):
 
 
 
+# region IP
 
-__all__ = ["PortScanner", "parse_last_output"]
+@dataclass
+class IpLookupResult:
+    """
+    Store a normalized IP lookup result.
+
+    Attributes:
+        source: Query provider name.
+        ip: Queried IP address.
+        country: Country or region name.
+        country_code: ISO country code.
+        region: Region or province name.
+        city: City name.
+        zip: Postal code.
+        latitude: Latitude value.
+        longitude: Longitude value.
+        timezone: Timezone name.
+        isp: Internet service provider.
+        org: Organization name.
+        asn: Autonomous system number or text.
+        as_name: Autonomous system name.
+        reverse_dns: Reverse DNS hostname.
+        mobile: Whether the IP belongs to a mobile network.
+        proxy: Whether the IP is detected as proxy or VPN.
+        hosting: Whether the IP belongs to hosting or data center network.
+        raw: Original provider response.
+    """
+    source: Optional[str] = None
+    ip: Optional[str] = None
+    country: Optional[str] = None
+    country_code: Optional[str] = None
+    region: Optional[str] = None
+    city: Optional[str] = None
+    zip: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    timezone: Optional[str] = None
+    isp: Optional[str] = None
+    org: Optional[str] = None
+    asn: Optional[str] = None
+    as_name: Optional[str] = None
+    reverse_dns: Optional[str] = None
+    mobile: Optional[bool] = None
+    proxy: Optional[bool] = None
+    hosting: Optional[bool] = None
+    raw: Optional[dict[str, Any]] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """
+        Convert the result to a plain dictionary.
+
+        Returns:
+            dict: Dictionary representation of the lookup result.
+        """
+        return asdict(self)
+
+    def get(self, key: str, default=None):
+        """
+        Get a field value by name, similar to dict.get.
+
+        Args:
+            key: Field name.
+            default: Value returned when the field does not exist.
+
+        Returns:
+            Any: Field value, or default if the field does not exist.
+        """
+        return getattr(self, key, default)
+
+    def __getitem__(self, key: str):
+        """
+        Get a field value by square-bracket access.
+
+        Args:
+            key: Field name.
+
+        Returns:
+            Any: Field value.
+        """
+        return getattr(self, key)
+
+    def __contains__(self, key: str) -> bool:
+        """
+        Check whether a field exists on the result.
+
+        Args:
+            key: Field name.
+
+        Returns:
+            bool: True if the field exists, otherwise False.
+        """
+        return hasattr(self, key)
+
+
+def _none_if_empty(value):
+    """
+    Convert empty strings to None.
+
+    Args:
+        value: Value returned by a provider.
+
+    Returns:
+        Any: None if value is an empty string, otherwise the original value.
+    """
+    return None if value == "" else value
+
+
+def _http_get_json(url: str, timeout: int = 8) -> dict:
+    """
+    Send an HTTP GET request and parse the JSON response.
+
+    Args:
+        url: Request URL.
+        timeout: Request timeout in seconds.
+
+    Returns:
+        dict: Parsed JSON response.
+    """
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "ip-lookup-script/1.0",
+            "Accept": "application/json",
+        },
+    )
+
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        body = resp.read().decode("utf-8", errors="replace")
+        return json.loads(body)
+
+
+def _validate_ip(ip: str) -> str:
+    """
+    Validate and normalize an IP address.
+
+    Args:
+        ip: IP address text.
+
+    Returns:
+        str: Normalized IP address.
+    """
+    try:
+        return str(ipaddress.ip_address(ip.strip()))
+    except ValueError:
+        raise SystemExit(f"非法 IP 地址: {ip}")
+
+
+def _query_ip_api(ip: str) -> IpLookupResult:
+    """
+    Query IP information from ip-api.com.
+
+    Args:
+        ip: Normalized IP address.
+
+    Returns:
+        IpLookupResult: Normalized IP lookup result.
+    """
+    fields = ",".join([
+        "status",
+        "message",
+        "query",
+        "country",
+        "countryCode",
+        "regionName",
+        "city",
+        "zip",
+        "lat",
+        "lon",
+        "timezone",
+        "isp",
+        "org",
+        "as",
+        "asname",
+        "reverse",
+        "mobile",
+        "proxy",
+        "hosting",
+    ])
+
+    url = (
+        "http://ip-api.com/json/"
+        + urllib.parse.quote(ip)
+        + "?fields="
+        + urllib.parse.quote(fields)
+        + "&lang=zh-CN"
+    )
+
+    data = _http_get_json(url)
+
+    if data.get("status") != "success":
+        raise RuntimeError(data.get("message", "ip-api 查询失败"))
+
+    return IpLookupResult(
+        source="ip-api.com",
+        ip=data.get("query"),
+        country=data.get("country"),
+        country_code=data.get("countryCode"),
+        region=data.get("regionName"),
+        city=data.get("city"),
+        zip=_none_if_empty(data.get("zip")),
+        latitude=data.get("lat"),
+        longitude=data.get("lon"),
+        timezone=data.get("timezone"),
+        isp=data.get("isp"),
+        org=_none_if_empty(data.get("org")),
+        asn=data.get("as"),
+        as_name=data.get("asname"),
+        reverse_dns=_none_if_empty(data.get("reverse")),
+        mobile=data.get("mobile"),
+        proxy=data.get("proxy"),
+        hosting=data.get("hosting"),
+        raw=data,
+    )
+
+
+def _query_ipapi_co(ip: str) -> IpLookupResult:
+    """
+    Query IP information from ipapi.co.
+
+    Args:
+        ip: Normalized IP address.
+
+    Returns:
+        IpLookupResult: Normalized IP lookup result.
+    """
+    url = "https://ipapi.co/" + urllib.parse.quote(ip) + "/json/"
+    data = _http_get_json(url)
+
+    if data.get("error"):
+        raise RuntimeError(data.get("reason", "ipapi.co 查询失败"))
+
+    return IpLookupResult(
+        source="ipapi.co",
+        ip=data.get("ip"),
+        country=data.get("country_name"),
+        country_code=data.get("country_code"),
+        region=data.get("region"),
+        city=data.get("city"),
+        zip=_none_if_empty(data.get("postal")),
+        latitude=data.get("latitude"),
+        longitude=data.get("longitude"),
+        timezone=data.get("timezone"),
+        isp=data.get("org"),
+        org=data.get("org"),
+        asn=data.get("asn"),
+        raw=data,
+    )
+
+
+def lookup_ip(ip: str, provider: str = "auto") -> IpLookupResult:
+    """
+    Look up geographical and network information for an IP address.
+
+    Args:
+        ip: IP address to query.
+        provider: Query provider. Use "auto", "ip-api", or "ipapi".
+
+    Returns:
+        IpLookupResult: Normalized IP lookup result.
+    """
+    ip = _validate_ip(ip)
+
+    providers = {
+        "ip-api": _query_ip_api,
+        "ipapi": _query_ipapi_co,
+    }
+
+    if provider != "auto":
+        if provider not in providers:
+            raise ValueError(f"不支持的查询源: {provider}")
+        return providers[provider](ip)
+
+    errors = []
+
+    for name, func in providers.items():
+        try:
+            return func(ip)
+        except Exception as e:
+            errors.append(f"{name}: {e}")
+
+    raise RuntimeError("所有查询源都失败: " + " | ".join(errors))
+
+
+_IP_LOOKUP_TABLE_FIELDS = (
+    ("查询源", "source"),
+    ("IP", "ip"),
+    ("国家", "country"),
+    ("国家代码", "country_code"),
+    ("地区/省份", "region"),
+    ("城市", "city"),
+    ("邮编", "zip"),
+    ("纬度", "latitude"),
+    ("经度", "longitude"),
+    ("时区", "timezone"),
+    ("ISP", "isp"),
+    ("组织", "org"),
+    ("ASN", "asn"),
+    ("AS 名称", "as_name"),
+    ("反向 DNS", "reverse_dns"),
+    ("移动网络", "mobile"),
+    ("代理/VPN", "proxy"),
+    ("机房/托管", "hosting"),
+)
+
+
+def _get_lookup_value(info, key):
+    """
+    Get a lookup field value from a mapping or object.
+
+    Args:
+        info: IpLookupResult, dict, or object containing lookup fields.
+        key: Field name.
+
+    Returns:
+        Any: Field value, or None if the field does not exist.
+    """
+    if hasattr(info, "get"):
+        return info.get(key)
+    return getattr(info, key, None)
+
+
+def _text_display_width(text) -> int:
+    """
+    Calculate terminal display width for mixed Chinese and ASCII text.
+
+    Args:
+        text: Text to measure.
+
+    Returns:
+        int: Display width in terminal cells.
+    """
+    return sum(
+        2 if unicodedata.east_asian_width(char) in {"F", "W"} else 1
+        for char in str(text)
+    )
+
+
+def _pad_display_text(text, width: int) -> str:
+    """
+    Pad text to a target terminal display width.
+
+    Args:
+        text: Text to pad.
+        width: Target display width in terminal cells.
+
+    Returns:
+        str: Padded text.
+    """
+    text = str(text)
+    return text + " " * max(0, width - _text_display_width(text))
+
+
+def print_ip_lookup_table(info, file=None):
+    """
+    Print an IP lookup result as a simple table.
+
+    Args:
+        info: IpLookupResult, dict, or object containing lookup fields.
+        file: Output stream passed to print.
+
+    Returns:
+        None
+    """
+    width = max(_text_display_width(name) for name, _ in _IP_LOOKUP_TABLE_FIELDS)
+
+    for name, key in _IP_LOOKUP_TABLE_FIELDS:
+        value = _get_lookup_value(info, key)
+        if value is None:
+            value = ""
+        print(f"{_pad_display_text(name, width)} : {value}", file=file)
+
+
+# endregion IP 
+
+
+
+__all__ = [
+    "PortScanner",
+    "parse_last_output",
+    "IpLookupResult",
+    "lookup_ip",
+    "print_ip_lookup_table",
+]

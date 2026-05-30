@@ -1,8 +1,36 @@
 import pytest
-from keon.network import PortScanner, _parse_ports, _format_ports
+from keon.network import (
+    IpLookupResult,
+    PortScanner,
+    _parse_ports,
+    _format_ports,
+    print_ip_lookup_table,
+)
 
 
 # ── 测试端口解析 ───────────────────────────────────────────────────────────────
+
+def test_ip_lookup_result_defaults_to_none():
+    result = IpLookupResult(ip="125.34.220.38", proxy=False)
+
+    assert result.country is None
+    assert result.proxy is False
+    assert result.get("ip") == "125.34.220.38"
+    assert result["ip"] == "125.34.220.38"
+    assert "country" in result
+    assert result.get("missing", "fallback") == "fallback"
+    assert result.to_dict()["country"] is None
+
+
+def test_print_ip_lookup_table_accepts_ip_lookup_result(capsys):
+    result = IpLookupResult(source="ip-api.com", ip="125.34.220.38", country="中国")
+
+    print_ip_lookup_table(result)
+
+    captured = capsys.readouterr()
+    assert "ip-api.com" in captured.out
+    assert "125.34.220.38" in captured.out
+
 
 def test_parse_ports_single_int():
     assert _parse_ports(80) == [80]
