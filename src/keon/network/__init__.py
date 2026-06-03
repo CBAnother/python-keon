@@ -147,9 +147,12 @@ class PortScanner:
             self.scan_host(ip, port)
             self.queue.task_done()
     
-    def scan(self):
+    def scan(self, sort_by_ip=True):
         """
         开始扫描。
+        
+        Args:
+            sort_by_ip (bool): 是否按 IP 升序排列返回结果，默认为 True
         
         Returns:
             list: 开放的 (ip, port) 元组列表
@@ -217,5 +220,8 @@ class PortScanner:
         else:
             print("  未发现开放的主机")
         print(f"{'='*60}\n")
+        
+        if sort_by_ip:
+            self.open_results.sort(key=lambda x: (ipaddress.ip_address(x[0]), x[1]))
         
         return self.open_results
