@@ -73,6 +73,21 @@ def test_split_command_string():
     assert kc._split_command('python --version') == ['python', '--version']
 
 
+def test_split_command_windows_quoted_path_with_backslashes(monkeypatch):
+    """Windows：带空格且用引号包裹的路径不应把引号当作参数内容。"""
+    monkeypatch.setattr(os, 'name', 'nt')
+    cmd = r'mineru -p "C:\Users\a b\file.pdf" -o "C:\Users\a b\out"'
+    assert kc._split_command(cmd) == [
+        'mineru', '-p', r'C:\Users\a b\file.pdf', '-o', r'C:\Users\a b\out',
+    ]
+
+
+def test_split_command_windows_unquoted_backslash_path(monkeypatch):
+    """Windows：未加引号的路径仍保留反斜杠。"""
+    monkeypatch.setattr(os, 'name', 'nt')
+    assert kc._split_command(r'python C:\foo\bar.py') == ['python', r'C:\foo\bar.py']
+
+
 def test_channel_args():
     assert kc._channel_args(None) == []
     assert kc._channel_args('conda-forge') == ['-c', 'conda-forge']

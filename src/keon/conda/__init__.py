@@ -76,12 +76,19 @@ def _as_list(value: StrOrList) -> List[str]:
     return [str(v) for v in value]
 
 
+def _strip_outer_quotes(arg: str) -> str:
+    """去掉参数首尾成对的引号（Windows shlex posix=False 不会自动剥离）。"""
+    if len(arg) >= 2 and arg[0] == arg[-1] and arg[0] in '"\'':
+        return arg[1:-1]
+    return arg
+
+
 def _split_command(command: Union[str, Sequence[str]]) -> List[str]:
     """
     把命令规范化为参数列表。
 
-    字符串会按 shell 规则切分（Windows 上保留反斜杠路径），序列则原样转为字符串列表。
-    含空格或引号的复杂命令建议直接传列表以避免歧义。
+    字符串会按 shell 规则切分（Windows 上 posix=False 以保留未加引号路径中的反斜杠），
+    再剥离 Windows 下仍残留在参数上的外层引号。含空格路径更推荐直接传列表以避免歧义。
 
     Args:
         command: 命令字符串或参数序列。
@@ -90,7 +97,10 @@ def _split_command(command: Union[str, Sequence[str]]) -> List[str]:
         list[str]: 参数列表。
     """
     if isinstance(command, str):
-        return shlex.split(command, posix=(os.name != 'nt'))
+        parts = shlex.split(command, posix=(os.name != 'nt'))
+        if os.name == 'nt':
+            parts = [_strip_outer_quotes(p) for p in parts]
+        return parts
     return [str(c) for c in command]
 
 
@@ -194,7 +204,7 @@ def _pump(pipe, sink, buf: List[str]) -> None:
         pipe.close()
 
 
-def _run_tee(cmd, cwd, creationflags) -> subprocess.CompletedProcess:
+def _run_tee(cmd, cwd, creationflags, encoding: Optional[str] = None) -> subprocess.CompletedProcess:
     """
     以 tee 方式执行：实时输出到当前终端，同时把 stdout/stderr 捕获到返回值。
 
@@ -204,6 +214,8 @@ def _run_tee(cmd, cwd, creationflags) -> subprocess.CompletedProcess:
         cmd,
         cwd=cwd,
         text=True,
+        encoding=encoding,
+        errors='replace' if encoding else None,
         bufsize=1,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
@@ -229,6 +241,7 @@ def _run(
         check: bool = True,
         cwd: Optional[str] = None,
         echo: bool = False,
+        encoding: Optional[str] = None,
         ) -> subprocess.CompletedProcess:
     """
     执行子进程命令。
@@ -247,6 +260,8 @@ def _run(
         check (bool): True 时命令返回非零会抛出 subprocess.CalledProcessError。
         cwd (str): 工作目录。
         echo (bool): True 时在执行前打印将要运行的命令。
+        encoding (str): 解码子进程输出所用编码（如 'utf-8'、'gbk'）；为空时使用系统默认。
+                        指定时以 errors='replace' 容错，避免非法字节导致 UnicodeDecodeError。
 
     Returns:
         subprocess.CompletedProcess: 执行结果。
@@ -262,12 +277,14 @@ def _run(
     creationflags = _no_window_flags(capture or tee)
     try:
         if tee:
-            result = _run_tee(cmd, cwd=cwd, creationflags=creationflags)
+            result = _run_tee(cmd, cwd=cwd, creationflags=creationflags, encoding=encoding)
         else:
             result = subprocess.run(
                 cmd,
                 cwd=cwd,
                 text=True,
+                encoding=encoding,
+                errors='replace' if encoding else None,
                 capture_output=capture,
                 creationflags=creationflags,
                 # capture 模式下断开 stdin，避免子进程（如 conda 的错误上报、pip 等）
@@ -521,6 +538,7 @@ class CondaEnv:
             tee: bool = False,
             check: bool = True,
             verbose: bool = True,
+            encoding: Optional[str] = None,
             ) -> subprocess.CompletedProcess:
         """
         使用 conda 在本环境安装包。
@@ -533,6 +551,7 @@ class CondaEnv:
             tee (bool): 实时打印并同时捕获输出（耗时安装推荐）。
             check (bool): 失败时是否抛出异常。
             verbose (bool): 是否打印执行的命令。
+            encoding (str): 解码子进程输出所用编码（如 'utf-8'、'gbk'）；为空时使用系统默认。
 
         Returns:
             subprocess.CompletedProcess: 执行结果。
@@ -547,7 +566,7 @@ class CondaEnv:
         cmd = [self.conda_exe, 'install', *self.target_args, *pkgs, *_channel_args(channels)]
         if yes:
             cmd.append('-y')
-        return _run(cmd, capture=capture, tee=tee, check=check, echo=verbose)
+        return _run(cmd, capture=capture, tee=tee, check=check, echo=verbose, encoding=encoding)
 
     def pip_install(
             self,
@@ -558,6 +577,7 @@ class CondaEnv:
             tee: bool = False,
             check: bool = True,
             verbose: bool = True,
+            encoding: Optional[str] = None,
             ) -> subprocess.CompletedProcess:
         """
         使用本环境内的 pip 安装包（通过 ``conda run`` 调用对应环境的 pip）。
@@ -570,6 +590,7 @@ class CondaEnv:
             tee (bool): 实时打印并同时捕获输出（耗时安装推荐）。
             check (bool): 失败时是否抛出异常。
             verbose (bool): 是否打印执行的命令。
+            encoding (str): 解码子进程输出所用编码（如 'utf-8'、'gbk'）；为空时使用系统默认。
 
         Returns:
             subprocess.CompletedProcess: 执行结果。
@@ -586,7 +607,7 @@ class CondaEnv:
             pip_cmd.append('--upgrade')
         pip_cmd += pkgs
         pip_cmd += _as_list(extra_args)
-        return self.run(pip_cmd, capture=capture, tee=tee, check=check, verbose=verbose)
+        return self.run(pip_cmd, capture=capture, tee=tee, check=check, verbose=verbose, encoding=encoding)
 
     def install(self, packages: StrOrList, manager: str = 'conda', **kwargs) -> subprocess.CompletedProcess:
         """
@@ -618,6 +639,7 @@ class CondaEnv:
             check: bool = True,
             cwd: Optional[str] = None,
             verbose: bool = True,
+            encoding: Optional[str] = None,
             ) -> subprocess.CompletedProcess:
         """
         在本环境内执行任意命令（通过 ``conda run``）。
@@ -637,6 +659,7 @@ class CondaEnv:
             check (bool): 失败时是否抛出异常。
             cwd (str): 工作目录。
             verbose (bool): 是否打印执行的命令。
+            encoding (str): 解码子进程输出所用编码（如 'utf-8'、'gbk'）；为空时使用系统默认。
 
         Returns:
             subprocess.CompletedProcess: 执行结果。
@@ -665,7 +688,7 @@ class CondaEnv:
         if tee or not capture:
             cmd.append('--no-capture-output')
         cmd += args
-        return _run(cmd, capture=capture, tee=tee, check=check, cwd=cwd, echo=verbose)
+        return _run(cmd, capture=capture, tee=tee, check=check, cwd=cwd, echo=verbose, encoding=encoding)
 
     def run_script(
             self,
@@ -677,6 +700,7 @@ class CondaEnv:
             check: bool = True,
             cwd: Optional[str] = None,
             verbose: bool = True,
+            encoding: Optional[str] = None,
             ) -> subprocess.CompletedProcess:
         """
         在本环境内执行脚本。
@@ -690,12 +714,13 @@ class CondaEnv:
             check (bool): 失败时是否抛出异常。
             cwd (str): 工作目录。
             verbose (bool): 是否打印执行的命令。
+            encoding (str): 解码子进程输出所用编码（如 'utf-8'、'gbk'）；为空时使用系统默认。
 
         Returns:
             subprocess.CompletedProcess: 执行结果。
         """
         cmd = [interpreter, str(script), *_as_list(args)]
-        return self.run(cmd, capture=capture, tee=tee, check=check, cwd=cwd, verbose=verbose)
+        return self.run(cmd, capture=capture, tee=tee, check=check, cwd=cwd, verbose=verbose, encoding=encoding)
 
     def python(
             self,
@@ -705,6 +730,7 @@ class CondaEnv:
             check: bool = True,
             cwd: Optional[str] = None,
             verbose: bool = True,
+            encoding: Optional[str] = None,
             ) -> subprocess.CompletedProcess:
         """
         在本环境内执行 python（便捷封装），如 ``python(['-c', 'print(1)'])``。
@@ -718,12 +744,13 @@ class CondaEnv:
             check (bool): 失败时是否抛出异常。
             cwd (str): 工作目录。
             verbose (bool): 是否打印执行的命令。
+            encoding (str): 解码子进程输出所用编码（如 'utf-8'、'gbk'）；为空时使用系统默认。
 
         Returns:
             subprocess.CompletedProcess: 执行结果。
         """
         cmd = ['python', *_as_list(args)]
-        return self.run(cmd, capture=capture, tee=tee, check=check, cwd=cwd, verbose=verbose)
+        return self.run(cmd, capture=capture, tee=tee, check=check, cwd=cwd, verbose=verbose, encoding=encoding)
 
     def run_code(
             self,
@@ -735,6 +762,7 @@ class CondaEnv:
             check: bool = True,
             cwd: Optional[str] = None,
             verbose: bool = True,
+            encoding: Optional[str] = None,
             ) -> subprocess.CompletedProcess:
         """
         在本环境内执行一段 Python 代码（可多行）。
@@ -751,6 +779,7 @@ class CondaEnv:
             check (bool): 失败时是否抛出异常。
             cwd (str): 工作目录。
             verbose (bool): 是否打印执行的命令。
+            encoding (str): 解码子进程输出所用编码（如 'utf-8'、'gbk'）；为空时使用系统默认。
 
         Returns:
             subprocess.CompletedProcess: 执行结果。
@@ -764,7 +793,7 @@ class CondaEnv:
                 cmd.append('-u')
             cmd.append(path)
             cmd += _as_list(args)
-            return self.run(cmd, capture=capture, tee=tee, check=check, cwd=cwd, verbose=verbose)
+            return self.run(cmd, capture=capture, tee=tee, check=check, cwd=cwd, verbose=verbose, encoding=encoding)
         finally:
             os.remove(path)
 
