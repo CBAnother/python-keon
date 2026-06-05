@@ -9,7 +9,7 @@ import threading
 import subprocess
 from typing import List, Dict, Optional, Sequence, Union
 
-__all__ = ['Conda', 'CondaEnv']
+__all__ = ['Conda', 'CondaEnv', 'AsyncProcess']
 
 
 # 包名 / 命令参数可以是字符串或字符串序列
@@ -326,6 +326,184 @@ def _run(
             stderr=result.stderr,
         )
     return result
+
+
+class AsyncProcess:
+    """
+    异步执行的子进程句柄：进程在后台运行，可随时查询状态与已产生的输出。
+
+    输出由两个后台线程分别从 stdout / stderr 持续读出，累积到带锁的缓冲区里。
+    因此 :attr:`stdout` / :attr:`stderr` / :meth:`status` / :meth:`poll` 等查询都是
+    非阻塞的——它们只读取已收集到的内容，绝不会等待进程结束，也不会因管道写满而死锁。
+
+    Example:
+        >>> p = env.run_async(['mineru', '-p', 'a.pdf', '-o', 'out'])
+        >>> p.is_running          # 是否仍在运行
+        True
+        >>> p.status()            # 非阻塞地查询状态快照
+        {'pid': 1234, 'running': True, 'returncode': None}
+        >>> print(p.stdout)       # 非阻塞地查看当前已产生的输出
+        ...
+        >>> cp = p.result()       # 需要最终结果时再阻塞等待
+        >>> cp.returncode
+        0
+    """
+
+    def __init__(
+            self,
+            cmd: Sequence[str],
+            cwd: Optional[str] = None,
+            encoding: Optional[str] = None,
+            tee: bool = False,
+            creationflags: int = 0,
+            ):
+        """
+        启动子进程并开始在后台泵取输出。
+
+        Args:
+            cmd (Sequence[str]): 命令及参数列表。
+            cwd (str): 工作目录。
+            encoding (str): 解码输出所用编码（如 'utf-8'、'gbk'）；为空时使用系统默认。
+            tee (bool): True 时把输出实时转发到当前终端（同时仍会被捕获）。
+            creationflags (int): 传给 subprocess 的 creationflags。
+
+        Raises:
+            FileNotFoundError: 找不到可执行文件（通常是 conda 未安装或不在 PATH）。
+        """
+        self.cmd: List[str] = [str(c) for c in cmd]
+        self._tee = tee
+        self._lock = threading.Lock()
+        self._out: List[str] = []
+        self._err: List[str] = []
+        try:
+            self._proc = subprocess.Popen(
+                self.cmd,
+                cwd=cwd,
+                text=True,
+                encoding=encoding,
+                errors='replace' if encoding else None,
+                bufsize=1,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                creationflags=creationflags,
+            )
+        except FileNotFoundError as e:
+            raise FileNotFoundError(
+                f"无法执行 '{self.cmd[0]}'，请确认 conda 已正确安装并在 PATH 中。"
+            ) from e
+        self._t_out = threading.Thread(
+            target=self._pump, args=(self._proc.stdout, sys.stdout, self._out), daemon=True)
+        self._t_err = threading.Thread(
+            target=self._pump, args=(self._proc.stderr, sys.stderr, self._err), daemon=True)
+        self._t_out.start()
+        self._t_err.start()
+
+    def _pump(self, pipe, sink, buf: List[str]) -> None:
+        """后台线程：逐行读取 pipe，累积到 buf（带锁），按需转发到 sink。"""
+        try:
+            for line in iter(pipe.readline, ''):
+                if self._tee:
+                    sink.write(line)
+                    sink.flush()
+                with self._lock:
+                    buf.append(line)
+        finally:
+            pipe.close()
+
+    @property
+    def pid(self) -> int:
+        """子进程 PID。"""
+        return self._proc.pid
+
+    @property
+    def returncode(self) -> Optional[int]:
+        """退出码；仍在运行时为 None（不会触发等待）。"""
+        return self._proc.returncode
+
+    @property
+    def is_running(self) -> bool:
+        """是否仍在运行（非阻塞）。"""
+        return self._proc.poll() is None
+
+    @property
+    def stdout(self) -> str:
+        """当前已收集到的 stdout（非阻塞，可在运行中反复读取）。"""
+        with self._lock:
+            return ''.join(self._out)
+
+    @property
+    def stderr(self) -> str:
+        """当前已收集到的 stderr（非阻塞，可在运行中反复读取）。"""
+        with self._lock:
+            return ''.join(self._err)
+
+    def poll(self) -> Optional[int]:
+        """非阻塞地查询退出码：仍在运行返回 None，否则返回退出码。"""
+        return self._proc.poll()
+
+    def status(self) -> Dict:
+        """
+        非阻塞地返回状态快照。
+
+        Returns:
+            dict: ``{'pid': int, 'running': bool, 'returncode': Optional[int]}``。
+        """
+        rc = self._proc.poll()
+        return {'pid': self._proc.pid, 'running': rc is None, 'returncode': rc}
+
+    def wait(self, timeout: Optional[float] = None) -> int:
+        """
+        阻塞等待进程结束。
+
+        Args:
+            timeout (float): 最长等待秒数，为空则一直等待。
+
+        Returns:
+            int: 退出码。
+
+        Raises:
+            subprocess.TimeoutExpired: 超时仍未结束。
+        """
+        rc = self._proc.wait(timeout=timeout)
+        self._t_out.join()
+        self._t_err.join()
+        return rc
+
+    def result(self, timeout: Optional[float] = None, check: bool = False) -> subprocess.CompletedProcess:
+        """
+        等待结束并返回完整结果。
+
+        Args:
+            timeout (float): 最长等待秒数，为空则一直等待。
+            check (bool): True 且退出码非零时抛出 ``subprocess.CalledProcessError``。
+
+        Returns:
+            subprocess.CompletedProcess: 含最终 stdout / stderr 的结果。
+
+        Raises:
+            subprocess.TimeoutExpired: 超时仍未结束。
+            subprocess.CalledProcessError: check=True 且退出码非零。
+        """
+        self.wait(timeout=timeout)
+        cp = subprocess.CompletedProcess(self.cmd, self._proc.returncode, self.stdout, self.stderr)
+        if check and cp.returncode != 0:
+            raise subprocess.CalledProcessError(
+                cp.returncode, self.cmd, output=cp.stdout, stderr=cp.stderr)
+        return cp
+
+    def terminate(self) -> None:
+        """请求终止进程（POSIX 上发送 SIGTERM）。"""
+        self._proc.terminate()
+
+    def kill(self) -> None:
+        """强制杀死进程（POSIX 上发送 SIGKILL）。"""
+        self._proc.kill()
+
+    def __repr__(self) -> str:
+        rc = self._proc.poll()
+        state = 'running' if rc is None else f'exited({rc})'
+        return f"AsyncProcess(pid={self._proc.pid}, {state})"
 
 
 class Conda:
@@ -716,6 +894,24 @@ class CondaEnv:
         Raises:
             ValueError: 命令为空。
         """
+        cmd = self._build_run_cmd(command, no_capture=(tee or not capture))
+        return _run(cmd, capture=capture, tee=tee, check=check, cwd=cwd, echo=verbose, encoding=encoding)
+
+    def _build_run_cmd(self, command: Union[str, Sequence[str]], no_capture: bool) -> List[str]:
+        """
+        校验命令并拼出 ``conda run`` 完整参数列表。
+
+        Args:
+            command: 命令字符串或参数列表。
+            no_capture (bool): 是否附加 ``--no-capture-output``（让子进程输出实时直达管道/终端，
+                               而非被 conda 缓冲到结束才吐出）。
+
+        Returns:
+            list[str]: ``[conda, 'run', -n/-p, ('--no-capture-output'), *args]``。
+
+        Raises:
+            ValueError: 命令为空，或参数含换行（conda run 不支持）。
+        """
         args = _split_command(command)
         if not args:
             raise ValueError("命令不能为空")
@@ -727,17 +923,58 @@ class CondaEnv:
                 "请改用 env.run_code(代码字符串)（自动写入临时文件），"
                 "或把代码保存为 .py 文件后用 env.run_script(文件路径)。"
             )
-
         cmd = [self.conda_exe, 'run', *self.target_args]
-        # --no-capture-output 让子进程直接把输出写到 conda run 的 stdout/stderr：
-        #   - 默认模式：写到当前终端，实时显示
-        #   - tee 模式：写到我们的管道，由 _pump 线程实时转发并捕获
-        # 若不加它，conda run 会缓冲到子进程结束才吐出，tee 就失去了实时性。
-        # 仅「纯 capture」模式不加，交给 conda 缓冲后一次性返回即可。
-        if tee or not capture:
+        if no_capture:
             cmd.append('--no-capture-output')
         cmd += args
-        return _run(cmd, capture=capture, tee=tee, check=check, cwd=cwd, echo=verbose, encoding=encoding)
+        return cmd
+
+    def run_async(
+            self,
+            command: Union[str, Sequence[str]],
+            tee: bool = False,
+            cwd: Optional[str] = None,
+            verbose: bool = True,
+            encoding: Optional[str] = None,
+            ) -> AsyncProcess:
+        """
+        在本环境内异步执行命令（通过 ``conda run``），立即返回句柄，进程在后台运行。
+
+        典型用于耗时任务（如 ``mineru`` 转换）：启动后可随时通过返回的 :class:`AsyncProcess`
+        查询状态与已产生的输出，且查询不会阻塞、不会死锁。
+
+        Example:
+            >>> p = env.run_async(['mineru', '-p', file, '-o', folder])
+            >>> while p.is_running:
+            ...     print(p.stdout[-200:])   # 非阻塞查看最新输出
+            ...     time.sleep(1)
+            >>> cp = p.result()              # 拿最终结果
+
+        Args:
+            command: 命令字符串或参数列表，如 ['mineru', '-p', file, '-o', folder]。
+                     含空格的路径建议直接传列表以避免引号歧义。
+            tee (bool): True 时同时把输出实时转发到当前终端（输出始终会被捕获）。
+            cwd (str): 工作目录。
+            verbose (bool): 是否在启动前打印将要执行的命令。
+            encoding (str): 解码输出所用编码（如 'utf-8'、'gbk'）；为空时使用系统默认。
+
+        Returns:
+            AsyncProcess: 异步进程句柄。
+
+        Raises:
+            ValueError: 命令为空，或参数含换行（conda run 不支持）。
+        """
+        # 异步模式始终用管道接管输出（写入后台缓冲区），故总是加 --no-capture-output 以保证实时性。
+        cmd = self._build_run_cmd(command, no_capture=True)
+        if verbose:
+            print(f"[conda] $ {_echo_cmd(cmd)}")
+        return AsyncProcess(
+            cmd,
+            cwd=cwd,
+            encoding=encoding,
+            tee=tee,
+            creationflags=_no_window_flags(True),
+        )
 
     def run_script(
             self,
