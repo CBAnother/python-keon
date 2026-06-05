@@ -141,6 +141,30 @@ def _target_args(name: Optional[str], prefix: Optional[str]) -> List[str]:
     raise ValueError("必须指定 name 或 prefix 之一")
 
 
+def _norm_path(path: str) -> str:
+    """
+    规范化路径用于比较。
+
+    ``os.path.normpath`` 不会统一盘符大小写（``C:\\`` 与 ``c:\\`` 视为不同），
+    Windows 文件系统却是大小写不敏感的；这里再叠加 ``os.path.normcase``
+    （Windows 上会转小写并统一分隔符）以得到可安全相等比较的形式。
+
+    Args:
+        path (str): 原始路径。
+
+    Returns:
+        str: 规范化后、可用于相等比较的路径。
+    """
+    return os.path.normcase(os.path.normpath(path))
+
+
+def _same_path(a: Optional[str], b: Optional[str]) -> bool:
+    """判断两个路径是否指向同一位置（大小写不敏感平台上忽略盘符等大小写）。"""
+    if not a or not b:
+        return False
+    return _norm_path(a) == _norm_path(b)
+
+
 def _env_name_from_prefix(prefix: str, root_prefix: Optional[str] = None) -> str:
     """
     从环境路径推断环境名称。
@@ -152,10 +176,9 @@ def _env_name_from_prefix(prefix: str, root_prefix: Optional[str] = None) -> str
     Returns:
         str: 环境名称，根环境返回 'base'，其余返回路径最后一段。
     """
-    norm = os.path.normpath(prefix)
-    if root_prefix and norm == os.path.normpath(root_prefix):
+    if root_prefix and _same_path(prefix, root_prefix):
         return 'base'
-    return os.path.basename(norm)
+    return os.path.basename(os.path.normpath(prefix))
 
 
 def _echo_cmd(cmd: Sequence[str]) -> str:
@@ -482,6 +505,32 @@ class Conda:
             CondaEnv: 环境句柄。
         """
         return CondaEnv(name=name, prefix=prefix, conda_exe=self.conda_exe)
+
+    def current(self, prefer_name: bool = True) -> 'CondaEnv':
+        """
+        获取当前 Python 解释器所在 conda 环境的句柄（适合在 Jupyter / 脚本里直接调用）。
+
+        以 ``sys.prefix``（当前解释器的环境根目录）为准，可靠且不受环境名是否已知影响。
+        默认会尝试反查对应的环境名（如 'base'、'py310'），便于回显；查不到则退化为按
+        路径定位。盘符大小写差异（``C:\\`` 与 ``c:\\``）已做归一化处理。
+
+        Args:
+            prefer_name (bool): True 时优先返回带环境名的句柄（需要调用 ``conda info``），
+                                False 或反查失败时按 ``prefix`` 定位。
+
+        Returns:
+            CondaEnv: 指向当前环境的句柄。
+        """
+        prefix = sys.prefix
+        if prefer_name:
+            try:
+                for name, env_prefix in self.env_paths().items():
+                    if _same_path(env_prefix, prefix):
+                        return CondaEnv(name=name, conda_exe=self.conda_exe)
+            except Exception:
+                # 反查依赖 `conda info`，失败时不应阻塞：退化为按路径定位
+                pass
+        return CondaEnv(prefix=prefix, conda_exe=self.conda_exe)
 
 
 class CondaEnv:
