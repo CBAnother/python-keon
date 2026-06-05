@@ -154,6 +154,9 @@ class PortScanner:
         while True:
             item = self.queue.get()
             if item is None:
+                # 结束信号也要标记完成，否则 unfinished_tasks 计数残留，
+                # 复用实例再次调用 scan() 时 queue.join() 会永久阻塞
+                self.queue.task_done()
                 break
             
             ip, port = item
@@ -193,6 +196,11 @@ class PortScanner:
             print(f"错误: 无效的网段格式 - {e}")
             return []
         
+        # 每次扫描都重置状态，保证实例可被安全复用
+        # （也能避免上一次扫描被中断后残留的队列/结果影响本次扫描）
+        self.queue = Queue()
+        self.open_results = []
+
         # 创建工作线程
         threads = []
         for _ in range(min(self.max_threads, total_tasks)):
