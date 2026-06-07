@@ -103,3 +103,28 @@ print(r.stdout)
 env.run(['powershell', '-NoProfile', '-Command', 'mineru --version; echo 完成'], tee=True)
 ```
 
+
+## 生成可在 PowerShell 中执行的命令
+
+如果你想在 PowerShell 终端手动执行某个命令，可以用 `create_cmd` 生成完整的命令字符串：
+
+```python
+env = keon.conda.CondaEnv('py310')
+
+# 生成简单命令（默认）
+cmd = env.create_cmd('python --version')
+print(cmd)
+# 输出: conda run -n py310 python --version
+
+# 需要实时输出时，设置 capture=False（会添加 --no-capture-output）
+cmd = env.create_cmd('python script.py', capture=False)
+print(cmd)
+# 输出: conda run -n py310 --no-capture-output python script.py
+
+# 带空格的路径会自动添加引号转义
+cmd = env.create_cmd(['mineru', '-p', r'C:\Users\a b\file.pdf', '-o', r'C:\output'], capture=False)
+print(cmd)
+# 输出: conda run -n py310 --no-capture-output mineru -p "C:\\Users\\a b\\file.pdf" -o C:\output
+```
+
+生成的命令可以直接复制到 PowerShell 中执行。

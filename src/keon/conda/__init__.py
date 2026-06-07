@@ -929,6 +929,45 @@ class CondaEnv:
         cmd += args
         return cmd
 
+    def create_cmd(self, command: Union[str, Sequence[str]], capture: bool = True) -> str:
+        """
+        生成可在 PowerShell 中执行的 conda run 命令字符串。
+
+        Args:
+            command: 命令字符串或参数列表，如 'python --version' 或 ['python', '--version']。
+            capture (bool): 是否捕获输出（False 时附加 ``--no-capture-output`` 实时输出）。
+
+        Returns:
+            str: 完整的命令字符串，可直接复制到 PowerShell 执行。
+
+        Raises:
+            ValueError: 命令为空或参数含换行。
+
+        Example:
+            >>> env = CondaEnv('myenv')
+            >>> cmd = env.create_cmd('python script.py')
+            >>> print(cmd)
+            conda run -n myenv python script.py
+            >>> cmd = env.create_cmd('python script.py', capture=False)
+            >>> print(cmd)
+            conda run -n myenv --no-capture-output python script.py
+            >>> cmd = env.create_cmd(['mineru', '-p', 'C:\\Users\\a b\\file.pdf'], capture=False)
+            >>> print(cmd)
+            conda run -n myenv --no-capture-output mineru -p "C:\\Users\\a b\\file.pdf"
+        """
+        cmd_list = self._build_run_cmd(command, no_capture=not capture)
+        
+        # PowerShell 转义规则：含空格或特殊字符的参数需要用双引号包裹
+        def quote_if_needed(arg: str) -> str:
+            # 如果参数包含空格、引号或其他特殊字符，则用双引号包裹
+            if ' ' in arg or '"' in arg or "'" in arg or any(c in arg for c in ['&', '|', '<', '>', '^', '(', ')']):
+                # 转义内部的双引号和反斜杠
+                escaped = arg.replace('\\', '\\\\').replace('"', '`"')
+                return f'"{escaped}"'
+            return arg
+        
+        return ' '.join(quote_if_needed(arg) for arg in cmd_list)
+
     def run_async(
             self,
             command: Union[str, Sequence[str]],

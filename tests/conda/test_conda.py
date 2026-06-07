@@ -122,8 +122,8 @@ def rec(monkeypatch):
     """拦截 keon.conda._run，记录命令而不真正执行 conda。"""
     calls = []
 
-    def fake_run(cmd, capture=False, tee=False, check=True, cwd=None, echo=False):
-        calls.append(SimpleNamespace(cmd=list(cmd), capture=capture, tee=tee, check=check, cwd=cwd, echo=echo))
+    def fake_run(cmd, capture=False, tee=False, check=True, cwd=None, echo=False, encoding=None):
+        calls.append(SimpleNamespace(cmd=list(cmd), capture=capture, tee=tee, check=check, cwd=cwd, echo=echo, encoding=encoding))
         return SimpleNamespace(returncode=0, stdout='', stderr='')
 
     monkeypatch.setattr(kc, '_run', fake_run)
@@ -245,6 +245,38 @@ def test_run_script_builds_command(rec):
         'conda', 'run', '-n', 'py310', '--no-capture-output',
         'python', 'main.py', '--debug',
     ]
+
+
+def test_create_cmd_simple():
+    """测试生成简单命令字符串（默认 capture=True，不添加 --no-capture-output）"""
+    env = CondaEnv(name='py310', conda_exe='conda')
+    cmd = env.create_cmd('python --version')
+    assert cmd == 'conda run -n py310 python --version'
+
+
+def test_create_cmd_with_space_in_path():
+    """测试带空格的路径会被正确引号包裹"""
+    env = CondaEnv(name='py310', conda_exe='conda')
+    cmd = env.create_cmd(['mineru', '-p', r'C:\Users\a b\file.pdf', '-o', r'C:\Users\a b\out'], capture=False)
+    assert 'mineru -p' in cmd
+    assert r'"C:\\Users\\a b\\file.pdf"' in cmd
+    assert r'"C:\\Users\\a b\\out"' in cmd
+    assert '--no-capture-output' in cmd
+
+
+def test_create_cmd_capture_false():
+    """测试 capture=False 时添加 --no-capture-output"""
+    env = CondaEnv(prefix='/opt/envs/foo', conda_exe='conda')
+    cmd = env.create_cmd('python script.py', capture=False)
+    assert '--no-capture-output' in cmd
+    assert cmd == 'conda run -p /opt/envs/foo --no-capture-output python script.py'
+
+
+def test_create_cmd_list_input():
+    """测试列表输入"""
+    env = CondaEnv(name='test', conda_exe='mamba')
+    cmd = env.create_cmd(['pip', 'install', 'numpy'])
+    assert cmd == 'mamba run -n test pip install numpy'
 
 
 def test_python_helper(rec):
