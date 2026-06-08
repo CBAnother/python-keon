@@ -18,6 +18,7 @@ dependencies = [
   'pyperclip',
   'pandas',
   'requests',
+  'pyyaml',
 ]
 
 [tool.setuptools.packages.find]
