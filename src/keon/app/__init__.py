@@ -1,4 +1,5 @@
 import os
+import shutil
 from enum import Enum
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
@@ -62,6 +63,13 @@ def find_link_in_programs(link_name: str) -> Optional[Path]:
     return None
 
 
+def find_executable_in_path(executable_name: str) -> Optional[Path]:
+    target = shutil.which(executable_name)
+    if target is None:
+        return None
+    return Path(target)
+
+
 def get_lnk_target(lnk: Optional[Path]) -> Optional[Path]:
     if lnk is None or not lnk.exists():
         return None
@@ -92,6 +100,7 @@ class AppName(Enum):
     VISUAL_STUDIO_2015 = "Visual Studio 2015"
     LABWINDOWS_CVI_2015 = "LabWindows CVI 2015"
     TOTAL_COMMANDER = "Total Commander"
+    FFMPEG = "FFmpeg"
 
 
 class AppFinder:
@@ -155,6 +164,14 @@ class AppFinder:
         return None
 
     @staticmethod
+    def _find_ffmpeg() -> Optional[str]:
+        target = find_executable_in_path("ffmpeg")
+        if target is None:
+            return None
+
+        return str(parent(target, 1))
+
+    @staticmethod
     def find(name: AppName) -> Optional[str]:
         finders: Dict[AppName, Callable[[], Optional[str]]] = {
             AppName.VIVADO_2018_3: AppFinder._find_vivado_2018_3,
@@ -163,6 +180,7 @@ class AppFinder:
             AppName.VISUAL_STUDIO_2015: lambda: AppFinder._find_visual_studio("2015"),
             AppName.LABWINDOWS_CVI_2015: AppFinder._find_labwindows_cvi_2015,
             AppName.TOTAL_COMMANDER: AppFinder._find_total_commander,
+            AppName.FFMPEG: AppFinder._find_ffmpeg,
         }
 
         finder = finders.get(name)
@@ -176,6 +194,7 @@ __all__ = [
     "AppFinder",
     "AppName",
     "find_dir_in_programs",
+    "find_executable_in_path",
     "find_link_in_programs",
     "get_all_programs",
     "get_lnk_target",

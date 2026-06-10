@@ -1,3 +1,5 @@
+import os
+import stat
 from pathlib import Path
 
 import keon.app as ka
@@ -10,6 +12,11 @@ def _make_programs(root: Path, appdata: Path):
     sys_programs.mkdir(parents=True)
     user_programs.mkdir(parents=True)
     return sys_programs, user_programs
+
+
+def _make_executable(path: Path):
+    path.write_text("")
+    path.chmod(path.stat().st_mode | stat.S_IEXEC)
 
 
 def test_program_paths_from_environment(monkeypatch, tmp_path):
@@ -67,6 +74,38 @@ def test_find_link_in_programs_is_case_insensitive(monkeypatch, tmp_path):
     assert ka.find_link_in_programs("Missing") is None
 
 
+def test_find_executable_in_path(monkeypatch, tmp_path):
+    bin_dir = tmp_path / "ffmpeg" / "bin"
+    bin_dir.mkdir(parents=True)
+    executable_name = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
+    target = bin_dir / executable_name
+    _make_executable(target)
+
+    monkeypatch.setenv("PATH", str(bin_dir))
+    monkeypatch.setenv("PATHEXT", ".EXE")
+
+    assert ka.find_executable_in_path("ffmpeg") == target
+
+
+def test_find_executable_in_path_returns_none(monkeypatch):
+    monkeypatch.setattr(ka.shutil, "which", lambda _name: None)
+
+    assert ka.find_executable_in_path("ffmpeg") is None
+
+
+def test_app_finder_finds_ffmpeg_from_path(monkeypatch, tmp_path):
+    bin_dir = tmp_path / "ffmpeg" / "bin"
+    bin_dir.mkdir(parents=True)
+    executable_name = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
+    target = bin_dir / executable_name
+    _make_executable(target)
+
+    monkeypatch.setenv("PATH", str(bin_dir))
+    monkeypatch.setenv("PATHEXT", ".EXE")
+
+    assert AppFinder.find(AppName.FFMPEG) == str(bin_dir)
+
+
 def test_parent_walks_up_levels():
     assert ka.parent(Path("C:/a/b/c/d"), 2) == Path("C:/a/b")
 
@@ -82,3 +121,4 @@ def test_app_finder_unknown_enum_value_returns_none():
 
 def test_app_name_values():
     assert AppName.VISUAL_STUDIO_2022.value == "Visual Studio 2022"
+    assert AppName.FFMPEG.value == "FFmpeg"
