@@ -3,7 +3,7 @@ import stat
 from pathlib import Path
 
 import keon.app as ka
-from keon.app import AppFinder, AppName
+from keon.app import AppName
 
 
 def _make_programs(root: Path, appdata: Path):
@@ -93,7 +93,7 @@ def test_find_executable_in_path_returns_none(monkeypatch):
     assert ka.find_executable_in_path("ffmpeg") is None
 
 
-def test_app_finder_finds_ffmpeg_from_path(monkeypatch, tmp_path):
+def test_find_finds_ffmpeg_from_app_name(monkeypatch, tmp_path):
     bin_dir = tmp_path / "ffmpeg" / "bin"
     bin_dir.mkdir(parents=True)
     executable_name = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
@@ -103,7 +103,30 @@ def test_app_finder_finds_ffmpeg_from_path(monkeypatch, tmp_path):
     monkeypatch.setenv("PATH", str(bin_dir))
     monkeypatch.setenv("PATHEXT", ".EXE")
 
-    assert AppFinder.find(AppName.FFMPEG) == str(bin_dir)
+    assert ka.find(AppName.FFMPEG) == str(bin_dir)
+
+
+def test_find_accepts_app_name_string(monkeypatch, tmp_path):
+    bin_dir = tmp_path / "ffmpeg" / "bin"
+    bin_dir.mkdir(parents=True)
+    executable_name = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
+    target = bin_dir / executable_name
+    _make_executable(target)
+
+    monkeypatch.setenv("PATH", str(bin_dir))
+    monkeypatch.setenv("PATHEXT", ".EXE")
+
+    assert ka.find("FFMPEG") == str(bin_dir)
+    assert ka.find("ffmpeg") == str(bin_dir)
+    assert ka.find("FFmpeg") == str(bin_dir)
+
+
+def test_find_accepts_enum_name_and_value_strings(monkeypatch):
+    monkeypatch.setattr(ka, "_find_visual_studio", lambda version: "vs-{}".format(version))
+
+    assert ka.find("VISUAL_STUDIO_2022") == "vs-2022"
+    assert ka.find("Visual Studio 2022") == "vs-2022"
+    assert ka.find("visual studio 2022") == "vs-2022"
 
 
 def test_parent_walks_up_levels():
@@ -115,8 +138,9 @@ def test_get_lnk_target_returns_none_for_missing_path():
     assert ka.get_lnk_target(Path("C:/missing/link.lnk")) is None
 
 
-def test_app_finder_unknown_enum_value_returns_none():
-    assert AppFinder.find("missing") is None
+def test_find_unknown_app_returns_none():
+    assert ka.find("missing") is None
+    assert ka.find(123) is None
 
 
 def test_app_name_values():
