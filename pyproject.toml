@@ -18,6 +18,7 @@ dependencies = [
   'pyperclip',
   'pandas',
   'requests',
+  'pywin32; platform_system == "Windows"',
 ]
 
 [tool.setuptools.packages.find]

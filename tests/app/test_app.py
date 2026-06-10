@@ -1,0 +1,84 @@
+from pathlib import Path
+
+import keon.app as ka
+from keon.app import AppFinder, AppName
+
+
+def _make_programs(root: Path, appdata: Path):
+    sys_programs = root / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+    user_programs = appdata / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+    sys_programs.mkdir(parents=True)
+    user_programs.mkdir(parents=True)
+    return sys_programs, user_programs
+
+
+def test_program_paths_from_environment(monkeypatch, tmp_path):
+    all_users = tmp_path / "all-users"
+    appdata = tmp_path / "appdata"
+    sys_programs, user_programs = _make_programs(all_users, appdata)
+
+    monkeypatch.setenv("ALLUSERSPROFILE", str(all_users))
+    monkeypatch.setenv("APPDATA", str(appdata))
+
+    assert ka.get_sys_start_menu() == all_users / "Microsoft" / "Windows" / "Start Menu"
+    assert ka.get_sys_programs() == sys_programs
+    assert ka.get_user_start_menu() == appdata / "Microsoft" / "Windows" / "Start Menu"
+    assert ka.get_user_programs() == user_programs
+    assert ka.get_all_programs() == [sys_programs, user_programs]
+
+
+def test_missing_program_paths_are_ignored(monkeypatch, tmp_path):
+    all_users = tmp_path / "all-users"
+    appdata = tmp_path / "appdata"
+    sys_programs, _user_programs = _make_programs(all_users, appdata)
+
+    monkeypatch.setenv("ALLUSERSPROFILE", str(all_users))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "missing-appdata"))
+
+    assert ka.get_all_programs() == [sys_programs]
+
+
+def test_find_dir_in_programs(monkeypatch, tmp_path):
+    all_users = tmp_path / "all-users"
+    appdata = tmp_path / "appdata"
+    sys_programs, _user_programs = _make_programs(all_users, appdata)
+    target = sys_programs / "Vendor" / "Total Commander"
+    target.mkdir(parents=True)
+
+    monkeypatch.setenv("ALLUSERSPROFILE", str(all_users))
+    monkeypatch.setenv("APPDATA", str(appdata))
+
+    assert ka.find_dir_in_programs("Total Commander") == target
+    assert ka.find_dir_in_programs("Missing") is None
+
+
+def test_find_link_in_programs_is_case_insensitive(monkeypatch, tmp_path):
+    all_users = tmp_path / "all-users"
+    appdata = tmp_path / "appdata"
+    _sys_programs, user_programs = _make_programs(all_users, appdata)
+    target = user_programs / "Visual Studio 2022.lnk"
+    target.write_text("")
+
+    monkeypatch.setenv("ALLUSERSPROFILE", str(all_users))
+    monkeypatch.setenv("APPDATA", str(appdata))
+
+    assert ka.find_link_in_programs("visual studio 2022") == target
+    assert ka.find_link_in_programs("VISUAL STUDIO 2022.LNK") == target
+    assert ka.find_link_in_programs("Missing") is None
+
+
+def test_parent_walks_up_levels():
+    assert ka.parent(Path("C:/a/b/c/d"), 2) == Path("C:/a/b")
+
+
+def test_get_lnk_target_returns_none_for_missing_path():
+    assert ka.get_lnk_target(None) is None
+    assert ka.get_lnk_target(Path("C:/missing/link.lnk")) is None
+
+
+def test_app_finder_unknown_enum_value_returns_none():
+    assert AppFinder.find("missing") is None
+
+
+def test_app_name_values():
+    assert AppName.VISUAL_STUDIO_2022.value == "Visual Studio 2022"
