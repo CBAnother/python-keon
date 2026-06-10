@@ -159,6 +159,83 @@ def test_build_split_commands_rejects_negative_duration(tmp_path):
         )
 
 
+def test_build_merge_ts_command_uses_default_output(tmp_path):
+    ts_dir = tmp_path / "video_parts"
+    ffmpeg = Ffmpeg("ffmpeg")
+
+    cmd = ffmpeg.build_merge_ts_command(ts_dir)
+
+    assert cmd == [
+        "ffmpeg",
+        "-hide_banner",
+        "-y",
+        "-i", str(ts_dir / "index.m3u8"),
+        "-c", "copy",
+        str(tmp_path / "video_parts.mp4"),
+    ]
+
+
+def test_build_merge_ts_command_accepts_custom_output_and_m3u8(tmp_path):
+    ts_dir = tmp_path / "video_parts"
+    output = tmp_path / "out" / "movie.mp4"
+    ffmpeg = Ffmpeg("ffmpeg")
+
+    cmd = ffmpeg.build_merge_ts_command(
+        ts_dir,
+        output=output,
+        m3u8_name="playlist.m3u8",
+        overwrite=False,
+    )
+
+    assert "-n" in cmd
+    assert "-y" not in cmd
+    assert cmd[cmd.index("-i") + 1] == str(ts_dir / "playlist.m3u8")
+    assert cmd[-1] == str(output)
+
+
+def test_merge_ts_runs_command_and_removes_dir(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(cmd, check=True):
+        calls.append(SimpleNamespace(cmd=cmd, check=check))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(kf.subprocess, "run", fake_run)
+
+    ts_dir = tmp_path / "video_parts"
+    ts_dir.mkdir()
+    (ts_dir / "index.m3u8").write_text("")
+    ffmpeg = Ffmpeg("ffmpeg")
+
+    output = ffmpeg.merge_ts(ts_dir, verbose=False)
+
+    assert output == tmp_path / "video_parts.mp4"
+    assert calls[0].cmd[-1] == str(output)
+    assert calls[0].check is True
+    assert not ts_dir.exists()
+
+
+def test_merge_ts_can_keep_source_dir(monkeypatch, tmp_path):
+    monkeypatch.setattr(kf.subprocess, "run", lambda cmd, check=True: SimpleNamespace(returncode=0))
+
+    ts_dir = tmp_path / "video_parts"
+    ts_dir.mkdir()
+    ffmpeg = Ffmpeg("ffmpeg")
+
+    ffmpeg.merge_ts(ts_dir, remove_dir=False)
+
+    assert ts_dir.exists()
+
+
+def test_merge_ts_rejects_output_inside_removed_dir(tmp_path):
+    ts_dir = tmp_path / "video_parts"
+    ts_dir.mkdir()
+    ffmpeg = Ffmpeg("ffmpeg")
+
+    with pytest.raises(ValueError, match="output must not be inside ts_dir"):
+        ffmpeg.merge_ts(ts_dir, output=ts_dir / "out.mp4", remove_dir=True)
+
+
 def test_split_runs_commands_and_returns_outputs(monkeypatch, tmp_path):
     calls = []
 

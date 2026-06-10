@@ -1,5 +1,6 @@
 import os
 import re
+import shutil
 import shlex
 import subprocess
 from dataclasses import dataclass
@@ -261,6 +262,24 @@ def _segment_output_name(segment: AudioSegment) -> str:
     return segment.name or segment.start
 
 
+def _path_is_relative_to(path: Path, parent: Path) -> bool:
+    """
+    Check whether a path is inside another path.
+
+    Args:
+        path: Child path.
+        parent: Parent path.
+
+    Returns:
+        True if path is inside parent, otherwise False.
+    """
+    try:
+        path.resolve().relative_to(parent.resolve())
+        return True
+    except ValueError:
+        return False
+
+
 class Ffmpeg:
     """
     Small wrapper around the ffmpeg executable.
@@ -342,6 +361,85 @@ class Ffmpeg:
             commands.append(cmd)
 
         return commands
+
+    def build_merge_ts_command(
+            self,
+            ts_dir: Union[str, Path],
+            output: Optional[Union[str, Path]] = None,
+            m3u8_name: str = "index.m3u8",
+            overwrite: bool = True,
+            ) -> List[str]:
+        """
+        Build an ffmpeg command for merging TS files through a local m3u8 file.
+
+        Args:
+            ts_dir: Directory containing the m3u8 file and TS files.
+            output: Output video path; defaults to <ts_dir parent>/<ts_dir name>.mp4.
+            m3u8_name: M3U8 file name inside ts_dir.
+            overwrite: Whether to overwrite an existing output file.
+
+        Returns:
+            ffmpeg command argument list.
+        """
+        ts_path = Path(ts_dir)
+        m3u8 = ts_path / m3u8_name
+        output_path = Path(output) if output is not None else ts_path.parent / f"{ts_path.name}.mp4"
+
+        return [
+            self.ffmpeg,
+            "-hide_banner",
+            "-y" if overwrite else "-n",
+            "-i", str(m3u8),
+            "-c", "copy",
+            str(output_path),
+        ]
+
+    def merge_ts(
+            self,
+            ts_dir: Union[str, Path],
+            output: Optional[Union[str, Path]] = None,
+            m3u8_name: str = "index.m3u8",
+            remove_dir: bool = True,
+            overwrite: bool = True,
+            check: bool = True,
+            verbose: bool = False,
+            ) -> Path:
+        """
+        Merge TS files through a local m3u8 file.
+
+        Args:
+            ts_dir: Directory containing the m3u8 file and TS files.
+            output: Output video path; defaults to <ts_dir parent>/<ts_dir name>.mp4.
+            m3u8_name: M3U8 file name inside ts_dir.
+            remove_dir: Whether to remove ts_dir after ffmpeg succeeds.
+            overwrite: Whether to overwrite an existing output file.
+            check: Whether subprocess.run should raise on a non-zero exit code.
+            verbose: Whether to print the ffmpeg command before running it.
+
+        Returns:
+            Output video path.
+        """
+        ts_path = Path(ts_dir)
+        cmd = self.build_merge_ts_command(
+            ts_dir=ts_path,
+            output=output,
+            m3u8_name=m3u8_name,
+            overwrite=overwrite,
+        )
+        output_path = Path(cmd[-1])
+
+        if remove_dir and _path_is_relative_to(output_path, ts_path):
+            raise ValueError("output must not be inside ts_dir when remove_dir is True")
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        if verbose:
+            print(format_command(cmd))
+        subprocess.run(cmd, check=check)
+
+        if remove_dir:
+            shutil.rmtree(ts_path, ignore_errors=True)
+
+        return output_path
 
     def split(
             self,
