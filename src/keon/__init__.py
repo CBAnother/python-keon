@@ -4,6 +4,7 @@ from typing import Any, TYPE_CHECKING
 __all__ = [
     "app",
     "conda",
+    "ffmpeg",
     "importlib",
     "json",
     "network",
@@ -12,7 +13,7 @@ __all__ = [
 ]
 
 if TYPE_CHECKING:
-    from . import app, conda, importlib, json, network, os, vpn  # type: ignore[no-redef]
+    from . import app, conda, ffmpeg, importlib, json, network, os, vpn  # type: ignore[no-redef]
 
 
 def __getattr__(name) -> Any:
