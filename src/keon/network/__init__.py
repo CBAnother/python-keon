@@ -1,4 +1,5 @@
 """网络工具模块，提供端口扫描等功能。"""
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -1049,6 +1050,220 @@ def get_public_ip(prefer_cn: bool = False, timeout=(2, 3)) -> dict[str, str]:
 
 
 
+# region 图片下载
+
+# markdown 图片语法：![alt](url "title")，url 可以用 <> 包裹
+_MD_IMAGE_RE = re.compile(r'!\[[^\]]*\]\(\s*(?:<([^>]+)>|([^)\s]+))[^)]*\)')
+
+# 裸 URL
+_BARE_URL_RE = re.compile(r'https?://[^\s<>"\'\)\]]+')
+
+_CONTENT_TYPE_EXT = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/svg+xml": ".svg",
+    "image/bmp": ".bmp",
+    "image/x-icon": ".ico",
+    "image/avif": ".avif",
+    "image/tiff": ".tiff",
+}
+
+
+def _extract_image_urls(sources):
+    """
+    从输入中提取所有图片 URL，去重并保持出现顺序。
+
+    Args:
+        sources: str 或 list[str]，内容可以是裸 URL、markdown 图片语法，
+            或包含若干图片链接的 markdown 文本。
+
+    Returns:
+        list: 提取到的 URL 列表。
+    """
+    if isinstance(sources, str):
+        items = [sources]
+    else:
+        items = list(sources)
+
+    urls = []
+    seen = set()
+
+    for item in items:
+        if not isinstance(item, str):
+            raise TypeError(f'不支持的输入类型: {type(item).__name__}')
+
+        text = item.strip()
+        if not text:
+            continue
+
+        found = []
+
+        # 先提取 markdown 图片语法中的 URL
+        last_end = 0
+        remaining_parts = []
+        for m in _MD_IMAGE_RE.finditer(text):
+            found.append(m.group(1) or m.group(2))
+            remaining_parts.append(text[last_end:m.start()])
+            last_end = m.end()
+        remaining_parts.append(text[last_end:])
+
+        # 再从剩余文本中找裸 URL，避免和 markdown 部分重复提取
+        found.extend(_BARE_URL_RE.findall(''.join(remaining_parts)))
+
+        for url in found:
+            url = url.strip()
+            if url and url not in seen:
+                seen.add(url)
+                urls.append(url)
+
+    return urls
+
+
+def _filename_from_url(url):
+    """
+    从 URL 中提取并清洗出合法的文件名（可能为空字符串）。
+
+    Args:
+        url (str): 图片 URL。
+
+    Returns:
+        str: 清洗后的文件名。
+    """
+    path = urllib.parse.urlsplit(url).path
+    name = urllib.parse.unquote(Path(path).name)
+    # 去掉 Windows / Linux 下的非法字符
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', name).strip(' .')
+    return name[:100]
+
+
+def download_images(sources, save_dir='./images', timeout=15,
+                    overwrite=False, max_workers=8, headers=None, verbose=True):
+    """
+    下载图片到指定文件夹。
+
+    支持的输入形式：
+        'https://a.com/b.png'                          单个 URL
+        '![](https://a.com/b.png)'                     markdown 图片
+        '![alt](https://a.com/b.png "title")'          带 alt/title 的 markdown 图片
+        '...markdown 全文...'                          自动提取其中所有图片链接
+        ['https://a.com/b.png', '![](https://c.com/d.jpg)']   以上形式混合的列表
+
+    Args:
+        sources: str 或 list[str]，图片 URL 或 markdown 格式的图片链接。
+        save_dir (str): 保存目录，不存在会自动创建，默认 './images'。
+        timeout: 单张图片的下载超时（秒），透传给 requests.get。
+        overwrite (bool): 目录下已有同名文件时是否覆盖，默认 False（跳过）。
+        max_workers (int): 并发下载线程数。
+        headers (dict): 额外的请求头，例如防盗链需要的 Referer。
+        verbose (bool): 是否打印下载进度。
+
+    Returns:
+        list: 每个 URL 一个 dict，包含：
+            - url: 图片 URL
+            - path: 保存路径（失败时为 None）
+            - status: 'downloaded' / 'exists' / 'failed'
+            - error: 失败原因（成功时为 None）
+    """
+    urls = _extract_image_urls(sources)
+
+    if not urls:
+        if verbose:
+            print('未找到可下载的图片 URL')
+        return []
+
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    hdrs = {
+        'User-Agent': (
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+            'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36'
+        ),
+    }
+    if headers:
+        hdrs.update(headers)
+
+    lock = threading.Lock()
+    # 本次调用中已分配的保存路径（小写），避免不同 URL 同名互相覆盖
+    used_names = set()
+
+    def _download_one(url):
+        result = {'url': url, 'path': None, 'status': 'failed', 'error': None}
+        candidate = None
+
+        try:
+            resp = requests.get(url, headers=hdrs, timeout=timeout, stream=True)
+            resp.raise_for_status()
+
+            name = _filename_from_url(url)
+            stem, ext = Path(name).stem, Path(name).suffix
+            if not stem:
+                stem = 'image'
+            if not ext:
+                ctype = resp.headers.get('Content-Type', '').split(';')[0].strip().lower()
+                ext = _CONTENT_TYPE_EXT.get(ctype, '')
+
+            with lock:
+                candidate = save_dir / f'{stem}{ext}'
+
+                # 磁盘上已有同名文件且本次未占用，视为已下载过
+                if not overwrite and candidate.exists() and str(candidate).lower() not in used_names:
+                    result['status'] = 'exists'
+                    result['path'] = str(candidate)
+                    resp.close()
+                    if verbose:
+                        print(f'[=] 已存在，跳过: {candidate}')
+                    return result
+
+                # 同名冲突时自动加 _1、_2 后缀
+                i = 1
+                while str(candidate).lower() in used_names or (not overwrite and candidate.exists()):
+                    candidate = save_dir / f'{stem}_{i}{ext}'
+                    i += 1
+                used_names.add(str(candidate).lower())
+
+            with open(candidate, 'wb') as f:
+                for chunk in resp.iter_content(chunk_size=65536):
+                    if chunk:
+                        f.write(chunk)
+
+            result['status'] = 'downloaded'
+            result['path'] = str(candidate)
+            if verbose:
+                print(f'[+] {url} -> {candidate}')
+
+        except Exception as e:
+            result['error'] = str(e)
+            if verbose:
+                print(f'[x] 下载失败: {url} ({e})')
+            # 清理下载到一半的文件
+            if candidate is not None and result['path'] is None and candidate.exists():
+                try:
+                    candidate.unlink()
+                except OSError:
+                    pass
+
+        return result
+
+    workers = max(1, min(max_workers, len(urls)))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        results = list(executor.map(_download_one, urls))
+
+    if verbose:
+        downloaded = sum(1 for r in results if r['status'] == 'downloaded')
+        exists = sum(1 for r in results if r['status'] == 'exists')
+        failed = sum(1 for r in results if r['status'] == 'failed')
+        print(f'共 {len(results)} 张: 下载 {downloaded}, 已存在 {exists}, 失败 {failed} -> {save_dir}')
+
+    return results
+
+
+# endregion 图片下载
+
+
+
 __all__ = [
     "PortScanner",
     "parse_last_output",
@@ -1056,4 +1271,5 @@ __all__ = [
     "lookup_ip",
     "print_ip_lookup_table",
     "get_public_ip",
+    "download_images",
 ]
