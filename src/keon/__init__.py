@@ -8,13 +8,14 @@ __all__ = [
     "importlib",
     "json",
     "network",
+    "novel",
     "os",
     "vmware",
     "vpn",
 ]
 
 if TYPE_CHECKING:
-    from . import app, conda, ffmpeg, importlib, json, network, os, vmware, vpn  # type: ignore[no-redef]
+    from . import app, conda, ffmpeg, importlib, json, network, novel, os, vmware, vpn  # type: ignore[no-redef]
 
 
 def __getattr__(name) -> Any:
