@@ -1,6 +1,10 @@
 import os
 import fnmatch
+import logging
+import time
 import pyperclip
+
+log = logging.getLogger(__name__)
 
 
 def __is_ignore_ptn(ignore_ptns, entry):
@@ -311,11 +315,16 @@ def _normalize_write_scope(scope):
     return scope
 
 
-def _broadcast_env_change():
+def _broadcast_env_change(timeout_ms=5000):
     """
     广播 WM_SETTINGCHANGE，让资源管理器等已运行的进程感知环境变量变化。
 
     注意：本进程自身不会因此刷新，新值只对之后新启动的进程生效。
+
+    Args:
+        timeout_ms (int): SendMessageTimeoutW 对每个窗口的等待上限（毫秒）。
+            HWND_BROADCAST 会把消息发给所有顶层窗口，若有窗口迟迟不响应，
+            最坏情况会阻塞到该超时；调小可缩短耗时，但通知可能不够彻底。
     """
     try:
         import ctypes
@@ -332,21 +341,37 @@ def _broadcast_env_change():
             ctypes.POINTER(wintypes.DWORD),
         ]
         result = wintypes.DWORD()
-        send(
+
+        t0 = time.perf_counter()
+        ret = send(
             0xFFFF,        # HWND_BROADCAST
             0x001A,        # WM_SETTINGCHANGE
             0,
             "Environment",
             0x0002,        # SMTO_ABORTIFHUNG
-            5000,
+            timeout_ms,
             ctypes.byref(result),
         )
-    except Exception:
+        elapsed = time.perf_counter() - t0
+
+        # ret == 0 通常表示某个窗口未在 timeout_ms 内响应（超时）或调用失败
+        log.debug(
+            "广播 WM_SETTINGCHANGE 耗时 %.3fs (timeout=%dms, 返回值=%s, 0 通常代表超时/失败)",
+            elapsed, timeout_ms, ret,
+        )
+        if elapsed * 1000 >= timeout_ms * 0.9:
+            log.warning(
+                "广播 WM_SETTINGCHANGE 耗时 %.3fs，接近超时上限 %dms，"
+                "说明有窗口响应缓慢；可设为 broadcast=False 跳过，或调小 broadcast_timeout_ms。",
+                elapsed, timeout_ms,
+            )
+    except Exception as e:
         # 广播失败不影响实际写入，忽略即可
-        pass
+        log.debug("广播 WM_SETTINGCHANGE 失败（忽略）: %r", e)
 
 
-def set_env_var(name, value, scope='user', expandable=None, broadcast=True):
+def set_env_var(name, value, scope='user', expandable=None, broadcast=False,
+                broadcast_timeout_ms=5000):
     """
     设置（新增或修改）一个环境变量。
 
@@ -360,7 +385,9 @@ def set_env_var(name, value, scope='user', expandable=None, broadcast=True):
         expandable (bool | None): 是否以 REG_EXPAND_SZ 类型写入（值中含 %VAR% 时
             应为 True，例如 PATH）。None 表示自动判断：值中包含 '%' 时用
             REG_EXPAND_SZ，否则用 REG_SZ。仅对注册表级别有效。
-        broadcast (bool): 写入注册表后是否广播 WM_SETTINGCHANGE 通知系统，默认 True。
+        broadcast (bool): 写入注册表后是否广播 WM_SETTINGCHANGE 通知已运行进程，默认 False。
+            新启动的进程无需广播即可读到新值；设为 True 时可能因等待顶层窗口响应而耗时数秒。
+        broadcast_timeout_ms (int): 广播时对每个窗口的等待上限（毫秒），默认 5000。
 
     Returns:
         str: 实际写入的值。
@@ -381,23 +408,25 @@ def set_env_var(name, value, scope='user', expandable=None, broadcast=True):
     root_name, sub_key = _ENV_REG_LOCATIONS[scope]
     root = getattr(winreg, root_name)
 
+    t0 = time.perf_counter()
     with winreg.OpenKey(root, sub_key, 0, winreg.KEY_SET_VALUE) as key:
         winreg.SetValueEx(key, name, 0, reg_type, value)
+    log.debug("写注册表 %s\\%s 耗时 %.3fs", scope, name, time.perf_counter() - t0)
 
     if broadcast:
-        _broadcast_env_change()
+        _broadcast_env_change(timeout_ms=broadcast_timeout_ms)
 
     return value
 
 
-def delete_env_var(name, scope='user', broadcast=True):
+def delete_env_var(name, scope='user', broadcast=False):
     """
     删除一个环境变量。
 
     Args:
         name (str): 变量名。
         scope (str): 'user' / 'system' / 'process'，默认 'user'。
-        broadcast (bool): 写入注册表后是否广播 WM_SETTINGCHANGE 通知系统，默认 True。
+        broadcast (bool): 写入注册表后是否广播 WM_SETTINGCHANGE 通知已运行进程，默认 False。
 
     Returns:
         bool: 变量原先存在并被删除返回 True；原本就不存在返回 False。
@@ -444,7 +473,7 @@ def _existing_path_name(scope):
     return 'Path'
 
 
-def set_path(paths, scope='user', expandable=True, dedup=True, broadcast=True):
+def set_path(paths, scope='user', expandable=True, dedup=True, broadcast=False):
     """
     设置（整体替换）PATH 环境变量。
 
@@ -454,7 +483,7 @@ def set_path(paths, scope='user', expandable=True, dedup=True, broadcast=True):
         expandable (bool): 是否以 REG_EXPAND_SZ 类型写入，默认 True
             （PATH 常含 %SystemRoot% 等引用，应保持可展开）。
         dedup (bool): 是否去重（不区分大小写，保留首次出现顺序），默认 True。
-        broadcast (bool): 写入注册表后是否广播 WM_SETTINGCHANGE，默认 True。
+        broadcast (bool): 写入注册表后是否广播 WM_SETTINGCHANGE，默认 False。
 
     Returns:
         str: 实际写入的 PATH 字符串。
@@ -485,7 +514,7 @@ def set_path(paths, scope='user', expandable=True, dedup=True, broadcast=True):
     return set_env_var(name, value, scope=scope, expandable=expandable, broadcast=broadcast)
 
 
-def add_to_path(entry, scope='user', prepend=False, expandable=True, broadcast=True):
+def add_to_path(entry, scope='user', prepend=False, expandable=True, broadcast=False):
     """
     向 PATH 添加一个路径。若该路径已存在（不区分大小写）则不重复添加。
 
@@ -494,7 +523,7 @@ def add_to_path(entry, scope='user', prepend=False, expandable=True, broadcast=T
         scope (str): 'user' / 'system' / 'process'，默认 'user'。
         prepend (bool): True 添加到最前面，False 追加到末尾，默认 False。
         expandable (bool): 是否以 REG_EXPAND_SZ 类型写入，默认 True。
-        broadcast (bool): 写入注册表后是否广播 WM_SETTINGCHANGE，默认 True。
+        broadcast (bool): 写入注册表后是否广播 WM_SETTINGCHANGE，默认 False。
 
     Returns:
         bool: 实际添加返回 True；已存在、未改动返回 False。
@@ -516,7 +545,7 @@ def add_to_path(entry, scope='user', prepend=False, expandable=True, broadcast=T
     return True
 
 
-def remove_from_path(entry, scope='user', expandable=True, broadcast=True):
+def remove_from_path(entry, scope='user', expandable=True, broadcast=False):
     """
     从 PATH 中移除一个路径（不区分大小写，移除所有匹配项）。
 
@@ -524,7 +553,7 @@ def remove_from_path(entry, scope='user', expandable=True, broadcast=True):
         entry (str): 要移除的路径。
         scope (str): 'user' / 'system' / 'process'，默认 'user'。
         expandable (bool): 是否以 REG_EXPAND_SZ 类型写入，默认 True。
-        broadcast (bool): 写入注册表后是否广播 WM_SETTINGCHANGE，默认 True。
+        broadcast (bool): 写入注册表后是否广播 WM_SETTINGCHANGE，默认 False。
 
     Returns:
         bool: 有匹配项被移除返回 True；没有匹配项、未改动返回 False。

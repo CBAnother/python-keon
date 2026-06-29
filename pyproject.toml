@@ -19,6 +19,7 @@ dependencies = [
   'pandas',
   'requests',
   'pyyaml',
+  'pywin32; platform_system == "Windows"',
 ]
 
 [tool.setuptools.packages.find]

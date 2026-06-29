@@ -294,10 +294,10 @@ def test_set_and_delete_env_var_user_roundtrip():
     assert name not in list_env_vars("user")
 
     try:
-        set_env_var(name, "hello-keon", scope="user", broadcast=False)
+        set_env_var(name, "hello-keon", scope="user")
         assert list_env_vars("user")[name] == "hello-keon"
     finally:
-        deleted = delete_env_var(name, scope="user", broadcast=False)
+        deleted = delete_env_var(name, scope="user")
         assert deleted is True
 
     # 确认已清理干净
@@ -311,13 +311,13 @@ def test_set_env_var_expandable_autodetect():
     assert name not in list_env_vars("user")
 
     try:
-        set_env_var(name, "%SystemRoot%\\Temp", scope="user", broadcast=False)
+        set_env_var(name, "%SystemRoot%\\Temp", scope="user")
         # 未展开应保留原样
         assert list_env_vars("user", expand=False)[name] == "%SystemRoot%\\Temp"
         # 展开后不应再包含 %
         expanded = list_env_vars("user", expand=True)[name]
         assert "%" not in expanded
     finally:
-        delete_env_var(name, scope="user", broadcast=False)
+        delete_env_var(name, scope="user")
 
     assert name not in list_env_vars("user")

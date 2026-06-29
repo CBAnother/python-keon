@@ -14,3 +14,9 @@ keon.os.print_env_vars(scope='system')
 
 
 
+设置环境变量
+
+```
+keon.os.
+```
+
