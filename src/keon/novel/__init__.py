@@ -50,9 +50,9 @@ def format_txt(
     """
     Format a novel text file as Markdown-style paragraphs and chapter headings.
 
-    Chapter headings receive stable identifiers such as ``{#ch001}``. When no
-    output suffix or path is given, ``book.txt`` is written to
-    ``book.format.txt``.
+    Chapter headings receive stable identifiers such as `{#ch001}`. When no
+    output suffix or path is given, `book.txt` is written to
+    `book.format.txt`.
 
     Args:
         src: Source novel text file.

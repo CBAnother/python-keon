@@ -53,10 +53,36 @@ def test_as_segment_rejects_invalid_input():
 def test_ffmpeg_accepts_directory(tmp_path):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
+    (bin_dir / _ffmpeg_name()).write_text("")
 
     ffmpeg = Ffmpeg(bin_dir)
 
     assert ffmpeg.ffmpeg == str(bin_dir / _ffmpeg_name())
+
+
+def test_ffmpeg_default_resolves_install_dir_from_app(monkeypatch, tmp_path):
+    import keon.app as ka
+
+    install_dir = tmp_path / "ffmpeg"
+    bin_dir = install_dir / "bin"
+    bin_dir.mkdir(parents=True)
+    executable = bin_dir / _ffmpeg_name()
+    executable.write_text("")
+
+    monkeypatch.setattr(ka, "find", lambda _name: str(install_dir))
+
+    ffmpeg = Ffmpeg()
+
+    assert ffmpeg.ffmpeg == str(executable)
+
+
+def test_ffmpeg_default_raises_when_app_cannot_find_installation(monkeypatch):
+    import keon.app as ka
+
+    monkeypatch.setattr(ka, "find", lambda _name: None)
+
+    with pytest.raises(FileNotFoundError, match="FFmpeg installation not found"):
+        Ffmpeg()
 
 
 def test_build_split_commands(tmp_path):

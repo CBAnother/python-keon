@@ -20,7 +20,7 @@ def _prefer_exe_over_bat(found: Optional[str], is_windows: bool) -> Optional[str
     """
     Windows 上若解析到的是 conda 的 .bat/.cmd 包装器，尽量改用同体系下的 conda.exe。
 
-    经过 .bat 会多一层 cmd.exe 解析，含空格/换行的参数（如多行 ``python -c`` 代码）
+    经过 .bat 会多一层 cmd.exe 解析，含空格/换行的参数（如多行 `python -c` 代码）
     会被批处理拆断；直接用 conda.exe 走 CreateProcess 可原样传参。
 
     Args:
@@ -125,8 +125,8 @@ def _target_args(name: Optional[str], prefix: Optional[str]) -> List[str]:
     生成定位某个环境的参数（按名称或按路径）。
 
     Args:
-        name (str): 环境名称，对应 ``-n``。
-        prefix (str): 环境路径，对应 ``-p``，优先级高于 name。
+        name (str): 环境名称，对应 `-n`。
+        prefix (str): 环境路径，对应 `-p`，优先级高于 name。
 
     Returns:
         list[str]: ['-p', prefix] 或 ['-n', name]。
@@ -145,8 +145,8 @@ def _norm_path(path: str) -> str:
     """
     规范化路径用于比较。
 
-    ``os.path.normpath`` 不会统一盘符大小写（``C:\\`` 与 ``c:\\`` 视为不同），
-    Windows 文件系统却是大小写不敏感的；这里再叠加 ``os.path.normcase``
+    `os.path.normpath` 不会统一盘符大小写（`C:\\` 与 `c:\\` 视为不同），
+    Windows 文件系统却是大小写不敏感的；这里再叠加 `os.path.normcase`
     （Windows 上会转小写并统一分隔符）以得到可安全相等比较的形式。
 
     Args:
@@ -185,7 +185,7 @@ def _echo_cmd(cmd: Sequence[str]) -> str:
     """
     把命令拼成单行、便于阅读的回显字符串。
 
-    含空白或换行的参数（如多行 ``python -c`` 代码）会被加引号并把换行转义为 ``\\n``，
+    含空白或换行的参数（如多行 `python -c` 代码）会被加引号并把换行转义为 `\\n`，
     避免回显时把参数内容铺成多行、看起来像“直接打印了代码”。
     """
     parts = []
@@ -447,7 +447,7 @@ class AsyncProcess:
         非阻塞地返回状态快照。
 
         Returns:
-            dict: ``{'pid': int, 'running': bool, 'returncode': Optional[int]}``。
+            dict: `{'pid': int, 'running': bool, 'returncode': Optional[int]}`。
         """
         rc = self._proc.poll()
         return {'pid': self._proc.pid, 'running': rc is None, 'returncode': rc}
@@ -476,7 +476,7 @@ class AsyncProcess:
 
         Args:
             timeout (float): 最长等待秒数，为空则一直等待。
-            check (bool): True 且退出码非零时抛出 ``subprocess.CalledProcessError``。
+            check (bool): True 且退出码非零时抛出 `subprocess.CalledProcessError`。
 
         Returns:
             subprocess.CompletedProcess: 含最终 stdout / stderr 的结果。
@@ -537,7 +537,7 @@ class Conda:
         检测 conda 是否可用。
 
         Returns:
-            bool: 能成功执行 ``conda --version`` 返回 True。
+            bool: 能成功执行 `conda --version` 返回 True。
         """
         try:
             return _run([self.conda_exe, '--version'], capture=True, check=False).returncode == 0
@@ -546,7 +546,7 @@ class Conda:
 
     def info(self) -> Dict:
         """
-        获取 ``conda info --json`` 的解析结果。
+        获取 `conda info --json` 的解析结果。
 
         Returns:
             dict: conda 的详细信息，包含 envs、root_prefix、conda_version 等。
@@ -623,7 +623,7 @@ class Conda:
             python (str): Python 版本，如 '3.10'，为空则不指定。
             packages: 创建时一并安装的包，字符串（空白分隔）或列表。
             channels: 额外的 channel，字符串或列表。
-            yes (bool): 是否自动确认（附加 ``-y``）。
+            yes (bool): 是否自动确认（附加 `-y`）。
             verbose (bool): 是否打印执行的命令。
 
         Returns:
@@ -653,7 +653,7 @@ class Conda:
 
         Args:
             name (str): 环境名称。
-            yes (bool): 是否自动确认（附加 ``-y``）。
+            yes (bool): 是否自动确认（附加 `-y`）。
             verbose (bool): 是否打印执行的命令。
 
         Raises:
@@ -676,8 +676,8 @@ class Conda:
         获取一个已存在环境的句柄（不校验是否真的存在）。
 
         Args:
-            name (str): 环境名称，对应 ``-n``。
-            prefix (str): 环境路径，对应 ``-p``。
+            name (str): 环境名称，对应 `-n`。
+            prefix (str): 环境路径，对应 `-p`。
 
         Returns:
             CondaEnv: 环境句柄。
@@ -688,13 +688,13 @@ class Conda:
         """
         获取当前 Python 解释器所在 conda 环境的句柄（适合在 Jupyter / 脚本里直接调用）。
 
-        以 ``sys.prefix``（当前解释器的环境根目录）为准，可靠且不受环境名是否已知影响。
+        以 `sys.prefix`（当前解释器的环境根目录）为准，可靠且不受环境名是否已知影响。
         默认会尝试反查对应的环境名（如 'base'、'py310'），便于回显；查不到则退化为按
-        路径定位。盘符大小写差异（``C:\\`` 与 ``c:\\``）已做归一化处理。
+        路径定位。盘符大小写差异（`C:\\` 与 `c:\\`）已做归一化处理。
 
         Args:
-            prefer_name (bool): True 时优先返回带环境名的句柄（需要调用 ``conda info``），
-                                False 或反查失败时按 ``prefix`` 定位。
+            prefer_name (bool): True 时优先返回带环境名的句柄（需要调用 `conda info`），
+                                False 或反查失败时按 `prefix` 定位。
 
         Returns:
             CondaEnv: 指向当前环境的句柄。
@@ -734,8 +734,8 @@ class CondaEnv:
         初始化环境句柄。
 
         Args:
-            name (str): 环境名称，对应 ``-n``。
-            prefix (str): 环境路径，对应 ``-p``，优先级高于 name。
+            name (str): 环境名称，对应 `-n`。
+            prefix (str): 环境路径，对应 `-p`，优先级高于 name。
             conda_exe (str): conda 可执行文件，为空时自动查找。
 
         Raises:
@@ -753,7 +753,7 @@ class CondaEnv:
 
     @property
     def target_args(self) -> List[str]:
-        """定位本环境的参数（``-n name`` 或 ``-p prefix``）。"""
+        """定位本环境的参数（`-n name` 或 `-p prefix`）。"""
         return _target_args(self.name, self.prefix)
 
     def conda_install(
@@ -773,7 +773,7 @@ class CondaEnv:
         Args:
             packages: 要安装的包，字符串（空白分隔）或列表，如 'numpy pandas' 或 ['numpy', 'pandas']。
             channels: 额外的 channel，字符串或列表。
-            yes (bool): 是否自动确认（附加 ``-y``）。
+            yes (bool): 是否自动确认（附加 `-y`）。
             capture (bool): 仅捕获输出（不在终端实时显示）。
             tee (bool): 实时打印并同时捕获输出（耗时安装推荐）。
             check (bool): 失败时是否抛出异常。
@@ -807,11 +807,11 @@ class CondaEnv:
             encoding: Optional[str] = None,
             ) -> subprocess.CompletedProcess:
         """
-        使用本环境内的 pip 安装包（通过 ``conda run`` 调用对应环境的 pip）。
+        使用本环境内的 pip 安装包（通过 `conda run` 调用对应环境的 pip）。
 
         Args:
             packages: 要安装的包，字符串（空白分隔）或列表。
-            upgrade (bool): 是否附加 ``--upgrade``。
+            upgrade (bool): 是否附加 `--upgrade`。
             extra_args: 传给 pip 的额外参数，字符串或列表，如 '--no-deps' 或 ['-i', '<url>']。
             capture (bool): 仅捕获输出（不在终端实时显示）。
             tee (bool): 实时打印并同时捕获输出（耗时安装推荐）。
@@ -838,7 +838,7 @@ class CondaEnv:
 
     def install(self, packages: StrOrList, manager: str = 'conda', **kwargs) -> subprocess.CompletedProcess:
         """
-        安装包，并根据 ``manager`` 参数选择 conda 或 pip。
+        安装包，并根据 `manager` 参数选择 conda 或 pip。
 
         Args:
             packages: 要安装的包，字符串（空白分隔）或列表。
@@ -869,7 +869,7 @@ class CondaEnv:
             encoding: Optional[str] = None,
             ) -> subprocess.CompletedProcess:
         """
-        在本环境内执行任意命令（通过 ``conda run``）。
+        在本环境内执行任意命令（通过 `conda run`）。
 
         输出模式：
             - 默认：实时输出到终端，stdout/stderr 为 None。
@@ -899,15 +899,15 @@ class CondaEnv:
 
     def _build_run_cmd(self, command: Union[str, Sequence[str]], no_capture: bool) -> List[str]:
         """
-        校验命令并拼出 ``conda run`` 完整参数列表。
+        校验命令并拼出 `conda run` 完整参数列表。
 
         Args:
             command: 命令字符串或参数列表。
-            no_capture (bool): 是否附加 ``--no-capture-output``（让子进程输出实时直达管道/终端，
+            no_capture (bool): 是否附加 `--no-capture-output`（让子进程输出实时直达管道/终端，
                                而非被 conda 缓冲到结束才吐出）。
 
         Returns:
-            list[str]: ``[conda, 'run', -n/-p, ('--no-capture-output'), *args]``。
+            list[str]: `[conda, 'run', -n/-p, ('--no-capture-output'), *args]`。
 
         Raises:
             ValueError: 命令为空，或参数含换行（conda run 不支持）。
@@ -935,7 +935,7 @@ class CondaEnv:
 
         Args:
             command: 命令字符串或参数列表，如 'python --version' 或 ['python', '--version']。
-            capture (bool): 是否捕获输出（False 时附加 ``--no-capture-output`` 实时输出）。
+            capture (bool): 是否捕获输出（False 时附加 `--no-capture-output` 实时输出）。
 
         Returns:
             str: 完整的命令字符串，可直接复制到 PowerShell 执行。
@@ -977,9 +977,9 @@ class CondaEnv:
             encoding: Optional[str] = None,
             ) -> AsyncProcess:
         """
-        在本环境内异步执行命令（通过 ``conda run``），立即返回句柄，进程在后台运行。
+        在本环境内异步执行命令（通过 `conda run`），立即返回句柄，进程在后台运行。
 
-        典型用于耗时任务（如 ``mineru`` 转换）：启动后可随时通过返回的 :class:`AsyncProcess`
+        典型用于耗时任务（如 `mineru` 转换）：启动后可随时通过返回的 :class:`AsyncProcess`
         查询状态与已产生的输出，且查询不会阻塞、不会死锁。
 
         Example:
@@ -1058,9 +1058,9 @@ class CondaEnv:
             encoding: Optional[str] = None,
             ) -> subprocess.CompletedProcess:
         """
-        在本环境内执行 python（便捷封装），如 ``python(['-c', 'print(1)'])``。
+        在本环境内执行 python（便捷封装），如 `python(['-c', 'print(1)'])`。
 
-        注意：``conda run`` 不支持含换行的参数，多行代码请改用 :meth:`run_code`。
+        注意：`conda run` 不支持含换行的参数，多行代码请改用 :meth:`run_code`。
 
         Args:
             args: 传给 python 的参数，字符串或列表。
@@ -1092,13 +1092,13 @@ class CondaEnv:
         """
         在本环境内执行一段 Python 代码（可多行）。
 
-        会先把代码写入临时 ``.py`` 文件再执行，以规避 ``conda run`` 不支持「参数含换行」
-        的限制（多行代码用 ``python -c`` 会直接报错）。
+        会先把代码写入临时 `.py` 文件再执行，以规避 `conda run` 不支持「参数含换行」
+        的限制（多行代码用 `python -c` 会直接报错）。
 
         Args:
             code (str): Python 源码，允许多行。
-            args: 传给脚本的命令行参数（即 ``sys.argv[1:]``），字符串或列表。
-            unbuffered (bool): 是否以 ``python -u`` 无缓冲运行（tee 实时输出时推荐 True）。
+            args: 传给脚本的命令行参数（即 `sys.argv[1:]`），字符串或列表。
+            unbuffered (bool): 是否以 `python -u` 无缓冲运行（tee 实时输出时推荐 True）。
             capture (bool): 仅捕获输出。
             tee (bool): 实时输出并同时捕获。
             check (bool): 失败时是否抛出异常。

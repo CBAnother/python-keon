@@ -107,19 +107,40 @@ def _ffmpeg_executable_name() -> str:
     return "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
 
 
-def _resolve_ffmpeg(ffmpeg: Union[str, Path]) -> str:
+def _resolve_ffmpeg(ffmpeg: Optional[Union[str, Path]] = None) -> str:
     """
     Resolve an ffmpeg command, executable path, or executable directory.
 
     Args:
-        ffmpeg: ffmpeg command, executable path, or directory containing ffmpeg.
+        ffmpeg: ffmpeg command, executable path, directory containing ffmpeg,
+            or None to locate FFmpeg via `keon.app.find`.
 
     Returns:
         Resolved ffmpeg command text.
+
+    Raises:
+        FileNotFoundError: FFmpeg cannot be located or resolved.
     """
+    if ffmpeg is None:
+        from keon.app import AppName, find
+
+        install_dir = find(AppName.FFMPEG)
+        if install_dir is None:
+            raise FileNotFoundError("FFmpeg installation not found")
+        ffmpeg = install_dir
+
     path = Path(ffmpeg)
     if path.is_dir():
-        return str(path / _ffmpeg_executable_name())
+        candidates = (
+            path / _ffmpeg_executable_name(),
+            path / "bin" / _ffmpeg_executable_name(),
+        )
+        for candidate in candidates:
+            if candidate.is_file():
+                return str(candidate)
+        raise FileNotFoundError(
+            "ffmpeg executable not found in directory: {}".format(path)
+        )
     return str(ffmpeg)
 
 
@@ -285,18 +306,23 @@ class Ffmpeg:
     Small wrapper around the ffmpeg executable.
 
     Args:
-        ffmpeg: ffmpeg command, executable path, or directory containing ffmpeg.
+        ffmpeg: ffmpeg command, executable path, directory containing ffmpeg,
+            or None to locate FFmpeg via `keon.app.find`.
     """
 
-    def __init__(self, ffmpeg: Union[str, Path] = "ffmpeg"):
+    def __init__(self, ffmpeg: Optional[Union[str, Path]] = None):
         """
         Initialize the ffmpeg wrapper.
 
         Args:
-            ffmpeg: ffmpeg command, executable path, or directory containing ffmpeg.
+            ffmpeg: ffmpeg command, executable path, directory containing ffmpeg,
+                or None to locate FFmpeg via `keon.app.find`.
 
         Returns:
             None
+
+        Raises:
+            FileNotFoundError: `ffmpeg` is None and FFmpeg cannot be located.
         """
         self.ffmpeg = _resolve_ffmpeg(ffmpeg)
 

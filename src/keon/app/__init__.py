@@ -280,16 +280,22 @@ def _find_total_commander() -> Optional[str]:
 
 def _find_ffmpeg() -> Optional[str]:
     """
-    Find the FFmpeg executable directory from PATH.
+    Find the FFmpeg installation directory from PATH.
+
+    FFmpeg is usually installed as `<root>/bin/ffmpeg.exe`; this returns
+    `<root>`, not the `bin` directory itself.
 
     Returns:
-        Directory containing the ffmpeg executable if found, otherwise None.
+        FFmpeg installation directory if found, otherwise None.
     """
     target = find_executable_in_path("ffmpeg")
     if target is None:
         return None
 
-    return str(parent(target, 1))
+    exe_dir = parent(target, 1)
+    if exe_dir.name.casefold() == "bin":
+        return str(exe_dir.parent)
+    return str(exe_dir)
 
 
 def _normalize_app_name(name: str) -> str:

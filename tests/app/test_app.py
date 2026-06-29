@@ -94,7 +94,8 @@ def test_find_executable_in_path_returns_none(monkeypatch):
 
 
 def test_find_finds_ffmpeg_from_app_name(monkeypatch, tmp_path):
-    bin_dir = tmp_path / "ffmpeg" / "bin"
+    install_dir = tmp_path / "ffmpeg"
+    bin_dir = install_dir / "bin"
     bin_dir.mkdir(parents=True)
     executable_name = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
     target = bin_dir / executable_name
@@ -103,11 +104,12 @@ def test_find_finds_ffmpeg_from_app_name(monkeypatch, tmp_path):
     monkeypatch.setenv("PATH", str(bin_dir))
     monkeypatch.setenv("PATHEXT", ".EXE")
 
-    assert ka.find(AppName.FFMPEG) == str(bin_dir)
+    assert ka.find(AppName.FFMPEG) == str(install_dir)
 
 
 def test_find_accepts_app_name_string(monkeypatch, tmp_path):
-    bin_dir = tmp_path / "ffmpeg" / "bin"
+    install_dir = tmp_path / "ffmpeg"
+    bin_dir = install_dir / "bin"
     bin_dir.mkdir(parents=True)
     executable_name = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
     target = bin_dir / executable_name
@@ -116,9 +118,9 @@ def test_find_accepts_app_name_string(monkeypatch, tmp_path):
     monkeypatch.setenv("PATH", str(bin_dir))
     monkeypatch.setenv("PATHEXT", ".EXE")
 
-    assert ka.find("FFMPEG") == str(bin_dir)
-    assert ka.find("ffmpeg") == str(bin_dir)
-    assert ka.find("FFmpeg") == str(bin_dir)
+    assert ka.find("FFMPEG") == str(install_dir)
+    assert ka.find("ffmpeg") == str(install_dir)
+    assert ka.find("FFmpeg") == str(install_dir)
 
 
 def test_find_accepts_enum_name_and_value_strings(monkeypatch):
