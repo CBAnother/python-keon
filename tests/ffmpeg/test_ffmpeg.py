@@ -284,3 +284,111 @@ def test_split_runs_commands_and_returns_outputs(monkeypatch, tmp_path):
     assert outputs == [out_dir / "A.mp3"]
     assert calls[0].cmd[-1] == str(out_dir / "A.mp3")
     assert calls[0].check is True
+
+
+def test_parse_time_helpers():
+    assert kf.parse_time_to_seconds("1h") == 3600
+    assert kf.parse_time_to_seconds("90m") == 5400
+    assert kf.parse_time_to_seconds("00:01:30") == 90
+    assert kf.parse_time_to_seconds_allow_zero("00:00:00") == 0
+    assert kf.format_seconds_for_name(3661) == "010101"
+
+
+def test_parse_time_helpers_reject_invalid_values():
+    with pytest.raises(ValueError):
+        kf.parse_time_to_seconds("0")
+    with pytest.raises(ValueError):
+        kf.parse_time_to_seconds_allow_zero("-1")
+
+
+def test_split_by_time_runs_ffmpeg(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(args):
+        calls.append(args)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    input_file = tmp_path / "movie.mp4"
+    input_file.write_text("")
+
+    ffmpeg = Ffmpeg("ffmpeg")
+    monkeypatch.setattr(ffmpeg, "_run", fake_run)
+
+    out_dir = tmp_path / "movie"
+    out_dir.mkdir()
+    (out_dir / "001.mp4").write_text("")
+
+    outputs = ffmpeg.split_by_time(input_file, segment_time="1h", overwrite=True)
+
+    assert outputs == [out_dir / "001.mp4"]
+    assert calls[0][calls[0].index("-segment_time") + 1] == "3600"
+
+
+def test_clip_by_time_builds_single_segment_command(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(args):
+        calls.append(args)
+        out_path = Path(args[-1])
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text("")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    input_file = tmp_path / "movie.mp4"
+    input_file.write_text("")
+
+    ffmpeg = Ffmpeg("ffmpeg")
+    monkeypatch.setattr(ffmpeg, "_run", fake_run)
+
+    output = ffmpeg.clip_by_time(
+        input_file,
+        start_time="00:00:10",
+        end_time="00:01:00",
+        overwrite=True,
+    )
+
+    assert output == tmp_path / "movie_clip_000010_000100.mp4"
+    assert calls[0][calls[0].index("-ss") + 1] == "10"
+    assert calls[0][calls[0].index("-t") + 1] == "50"
+
+
+def test_concat_videos_writes_concat_list(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(args):
+        calls.append(args)
+        out_path = Path(args[-1])
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text("")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    first = tmp_path / "part1.mp4"
+    second = tmp_path / "part2.mp4"
+    first.write_text("")
+    second.write_text("")
+
+    ffmpeg = Ffmpeg("ffmpeg")
+    monkeypatch.setattr(ffmpeg, "_run", fake_run)
+
+    output = ffmpeg.concat_videos([first, second], overwrite=True)
+
+    assert output == tmp_path / "part1_concat.mp4"
+    concat_list = tmp_path / "part1_concat__concat" / "concat_list.txt"
+    assert concat_list.exists()
+    text = concat_list.read_text(encoding="utf-8")
+    assert str(first) in text
+    assert str(second) in text
+
+
+def test_to_gif_rejects_end_time_and_duration_together(tmp_path):
+    input_file = tmp_path / "movie.mp4"
+    input_file.write_text("")
+
+    ffmpeg = Ffmpeg("ffmpeg")
+
+    with pytest.raises(ValueError, match="end_time and duration cannot be specified"):
+        ffmpeg.to_gif(
+            input_file,
+            end_time="00:01:00",
+            duration="30s",
+        )
