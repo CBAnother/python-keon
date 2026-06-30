@@ -11,6 +11,7 @@ __all__ = [
     "novel",
     "os",
     "pdf",
+    "postgres",
     "vmware",
     "vpn",
     "md",
@@ -20,7 +21,7 @@ __all__ = [
 ]
 
 if TYPE_CHECKING:
-    from . import app, conda, ffmpeg, importlib, json, network, novel, os, pdf, vmware, vpn, md, yaml, github, util  # type: ignore[no-redef]
+    from . import app, conda, ffmpeg, importlib, json, network, novel, os, pdf, postgres, vmware, vpn, md, yaml, github, util  # type: ignore[no-redef]
 
 
 def __getattr__(name) -> Any:
