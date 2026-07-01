@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from keon.md import get_images
+from keon.md import get_images, get_tables
 
 
 def test_get_images_with_http_urls(tmp_path):
@@ -159,3 +159,109 @@ def test_get_images_http_vs_https(tmp_path):
     assert len(images) == 2
     assert ('http', 'http://example.com/http.png') in images
     assert ('https', 'https://example.com/https.png') in images
+
+
+def test_get_tables_single_table(tmp_path):
+    """测试提取单个 Markdown 表格"""
+    md_file = tmp_path / 'test.md'
+    content = """\
+| Name     | path              | status | note |
+| -------- | ----------------- | ------ | ---- |
+| Alpha    | run_001_baseline  | ✅      |      |
+| Beta     | run_002_variant   | ✅      |      |
+| Gamma    | run_003_variant   | ✅      | done |
+"""
+    md_file.write_text(content, encoding='utf-8')
+
+    tables = get_tables(md_file)
+
+    assert len(tables) == 1
+    df = tables[0]
+    assert list(df.columns) == ['Name', 'path', 'status', 'note']
+    assert len(df) == 3
+    assert df.iloc[0]['Name'] == 'Alpha'
+    assert df.iloc[0]['path'] == 'run_001_baseline'
+    assert df.iloc[0]['status'] == '✅'
+    assert df.iloc[0]['note'] == ''
+    assert df.iloc[2]['Name'] == 'Gamma'
+    assert df.iloc[2]['note'] == 'done'
+
+
+def test_get_tables_multiple_tables(tmp_path):
+    """测试提取多个表格"""
+    md_file = tmp_path / 'test.md'
+    content = """\
+# Report
+
+| A | B |
+| - | - |
+| 1 | 2 |
+
+Some text between tables.
+
+| X | Y |
+| - | - |
+| foo | bar |
+"""
+    md_file.write_text(content, encoding='utf-8')
+
+    tables = get_tables(md_file)
+
+    assert len(tables) == 2
+    assert list(tables[0].columns) == ['A', 'B']
+    assert tables[0].iloc[0].tolist() == ['1', '2']
+    assert list(tables[1].columns) == ['X', 'Y']
+    assert tables[1].iloc[0].tolist() == ['foo', 'bar']
+
+
+def test_get_tables_empty_file(tmp_path):
+    """测试空文件"""
+    md_file = tmp_path / 'empty.md'
+    md_file.write_text('', encoding='utf-8')
+
+    assert get_tables(md_file) == []
+
+
+def test_get_tables_no_tables(tmp_path):
+    """测试没有表格的 Markdown 文件"""
+    md_file = tmp_path / 'no-tables.md'
+    content = """
+# Title
+
+Just some text with [links](https://example.com).
+"""
+    md_file.write_text(content, encoding='utf-8')
+
+    assert get_tables(md_file) == []
+
+
+def test_get_tables_header_only(tmp_path):
+    """测试仅有表头和分隔行的空表格"""
+    md_file = tmp_path / 'test.md'
+    content = """\
+| Col1 | Col2 |
+| ---- | ---- |
+"""
+    md_file.write_text(content, encoding='utf-8')
+
+    tables = get_tables(md_file)
+
+    assert len(tables) == 1
+    assert list(tables[0].columns) == ['Col1', 'Col2']
+    assert len(tables[0]) == 0
+
+
+def test_get_tables_with_string_path(tmp_path):
+    """测试传入字符串路径"""
+    md_file = tmp_path / 'test.md'
+    content = """\
+| name |
+| ---- |
+| test |
+"""
+    md_file.write_text(content, encoding='utf-8')
+
+    tables = get_tables(str(md_file))
+
+    assert len(tables) == 1
+    assert tables[0].iloc[0]['name'] == 'test'
