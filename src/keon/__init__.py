@@ -15,13 +15,14 @@ __all__ = [
     "vmware",
     "vpn",
     "md",
+    "microbin",
     "yaml",
     "github",
     "util",
 ]
 
 if TYPE_CHECKING:
-    from . import app, conda, ffmpeg, importlib, json, network, novel, os, pdf, postgres, vmware, vpn, md, yaml, github, util  # type: ignore[no-redef]
+    from . import app, conda, ffmpeg, importlib, json, network, novel, os, pdf, postgres, vmware, vpn, md, microbin, yaml, github, util  # type: ignore[no-redef]
 
 
 def __getattr__(name) -> Any:
