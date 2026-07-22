@@ -4,25 +4,27 @@ from typing import Any, TYPE_CHECKING
 __all__ = [
     "app",
     "conda",
+    "config",
     "ffmpeg",
+    "github",
     "importlib",
     "json",
+    "knock",
+    "md",
+    "microbin",
     "network",
     "novel",
     "os",
     "pdf",
     "postgres",
+    "util",
     "vmware",
     "vpn",
-    "md",
-    "microbin",
     "yaml",
-    "github",
-    "util",
 ]
 
 if TYPE_CHECKING:
-    from . import app, conda, ffmpeg, importlib, json, network, novel, os, pdf, postgres, vmware, vpn, md, microbin, yaml, github, util  # type: ignore[no-redef]
+    from . import app, conda, config, ffmpeg, github, importlib, json, knock, md, microbin, network, novel, os, pdf, postgres, util, vmware, vpn, yaml  # type: ignore[no-redef]
 
 
 def __getattr__(name) -> Any:
