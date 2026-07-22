@@ -1050,6 +1050,99 @@ def get_public_ip(prefer_cn: bool = False, timeout=(2, 3)) -> dict[str, str]:
 
 
 
+# region DNS
+
+def resolve_host(host: str, timeout: float = 5.0) -> dict[str, Any]:
+    """
+    解析主机名到 IP 地址。
+
+    Args:
+        host: 主机名或域名，例如 'www.google.com'
+        timeout: DNS 查询超时时间（秒），默认 5 秒
+
+    Returns:
+        dict: 包含以下字段：
+            - host: 输入的主机名
+            - ips: IP 地址列表（可能包含 IPv4 和 IPv6）
+            - ipv4: IPv4 地址列表
+            - ipv6: IPv6 地址列表
+            - status: 'success' 或 'failed'
+            - error: 失败原因（成功时为 None）
+
+    Examples:
+        >>> result = resolve_host('www.google.com')
+        >>> print(result['ipv4'])
+        ['142.250.185.36']
+        
+        >>> result = resolve_host('localhost')
+        >>> print(result['ips'])
+        ['127.0.0.1', '::1']
+    """
+    result = {
+        'host': host,
+        'ips': [],
+        'ipv4': [],
+        'ipv6': [],
+        'status': 'failed',
+        'error': None,
+    }
+
+    if not host or not isinstance(host, str):
+        result['error'] = '主机名不能为空'
+        return result
+
+    host = host.strip()
+    if not host:
+        result['error'] = '主机名不能为空'
+        return result
+
+    # 设置超时
+    original_timeout = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(timeout)
+
+    try:
+        # getaddrinfo 返回 (family, type, proto, canonname, sockaddr) 元组列表
+        addr_info = socket.getaddrinfo(host, None)
+        
+        seen = set()
+        for family, *_, sockaddr in addr_info:
+            ip = sockaddr[0]
+            
+            # 去重
+            if ip in seen:
+                continue
+            seen.add(ip)
+            
+            result['ips'].append(ip)
+            
+            # 分类到 IPv4 和 IPv6
+            if family == socket.AF_INET:
+                result['ipv4'].append(ip)
+            elif family == socket.AF_INET6:
+                result['ipv6'].append(ip)
+
+        if result['ips']:
+            result['status'] = 'success'
+        else:
+            result['error'] = '未解析到任何 IP 地址'
+
+    except socket.gaierror as e:
+        result['error'] = f'DNS 解析失败: {e}'
+    except socket.timeout:
+        result['error'] = f'DNS 解析超时（{timeout}秒）'
+    except Exception as e:
+        result['error'] = f'解析出错: {e}'
+    finally:
+        # 恢复原始超时设置
+        socket.setdefaulttimeout(original_timeout)
+
+    return result
+
+
+# endregion DNS
+
+
+
 # region 图片下载
 
 # markdown 图片语法：![alt](url "title")，url 可以用 <> 包裹
@@ -1271,5 +1364,6 @@ __all__ = [
     "lookup_ip",
     "print_ip_lookup_table",
     "get_public_ip",
+    "resolve_host",
     "download_images",
 ]
