@@ -7,12 +7,12 @@ name = "keon"
 version = "0.1.2"
 description = "Various easy-to-use tools"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 authors = [
   { name = "XiaoYi", email = "ad@xiaoyi.fit" }
 ]
 classifiers = [
-  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
 ]
 dependencies = [
   'pyperclip',

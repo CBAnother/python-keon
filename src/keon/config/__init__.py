@@ -37,7 +37,7 @@ import hashlib
 import threading
 from collections.abc import MutableMapping
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 # third party module
 import yaml
@@ -120,14 +120,14 @@ def _validate_name(name: str) -> str:
     return name
 
 
-def _hash_bytes(data: Optional[bytes]) -> Optional[str]:
+def _hash_bytes(data: bytes | None) -> str | None:
     """对文件内容取 sha256；内容为 None（文件不存在）时返回 None。"""
     if data is None:
         return None
     return hashlib.sha256(data).hexdigest()
 
 
-def _read_bytes(path: str) -> Optional[bytes]:
+def _read_bytes(path: str) -> bytes | None:
     """读取文件字节；文件不存在返回 None。"""
     try:
         with open(path, "rb") as f:
@@ -145,18 +145,18 @@ class _GlobalConfigManager:
     - 冲突检测：落盘前对比磁盘内容与 load 时的 hash，不一致则拒绝覆盖并备份。
     """
 
-    def __init__(self, name: str, path: Optional[str] = None) -> None:
+    def __init__(self, name: str, path: str | None = None) -> None:
         self._lock = threading.RLock()
         self._name = name
-        self._path: Optional[str] = (
+        self._path: str | None = (
             os.path.abspath(os.path.expanduser(path)) if path else None
         )
         # None 表示尚未从磁盘加载
-        self._data: Optional[dict] = None
+        self._data: dict | None = None
         # load / 成功保存时磁盘内容的 sha256（None 表示当时文件不存在）
-        self._baseline_hash: Optional[str] = None
+        self._baseline_hash: str | None = None
         # 当前冲突期间使用的备份文件路径（reload 后清空）
-        self._conflict_backup: Optional[str] = None
+        self._conflict_backup: str | None = None
 
     @property
     def name(self) -> str:
@@ -296,7 +296,7 @@ class _GlobalConfigManager:
 
     # ── section（可写视图，支持 cfg["a"]["b"] = v 落盘）──────────────────
 
-    def _section_dict(self, parts: List[Any], create: bool) -> Optional[dict]:
+    def _section_dict(self, parts: list[Any], create: bool) -> dict | None:
         """
         返回 parts 指向的 dict。未加锁，调用方需持锁。
 
@@ -312,7 +312,7 @@ class _GlobalConfigManager:
             KeyError: create=False 且中间某一级缺失（仅在需要区分时由调用方处理）。
         """
         cur = self._data
-        walked: List[Any] = []
+        walked: list[Any] = []
         for part in parts:
             walked.append(part)
             nxt = cur.get(part) if isinstance(cur, dict) else None
@@ -345,7 +345,7 @@ class _GlobalConfigManager:
             self._ensure_loaded()
             return GlobalConfig(self, [], save_on_set)
 
-    def section_is_mapping(self, parts: List[Any], key: Any) -> bool:
+    def section_is_mapping(self, parts: list[Any], key: Any) -> bool:
         """key 对应值是否为 dict（调用方据此决定返回嵌套视图还是拷贝）。"""
         with self._lock:
             self._ensure_loaded()
@@ -354,7 +354,7 @@ class _GlobalConfigManager:
                 raise KeyError(key)
             return isinstance(d[key], dict)
 
-    def section_getitem(self, parts: List[Any], key: Any) -> Any:
+    def section_getitem(self, parts: list[Any], key: Any) -> Any:
         """读取非 dict 值的深拷贝；dict 请用嵌套 GlobalConfig，不要走这里。"""
         with self._lock:
             self._ensure_loaded()
@@ -363,7 +363,7 @@ class _GlobalConfigManager:
                 raise KeyError(key)
             return copy.deepcopy(d[key])
 
-    def section_setitem(self, parts: List[Any], key: Any, value: Any,
+    def section_setitem(self, parts: list[Any], key: Any, value: Any,
                         save: bool) -> None:
         with self._lock:
             self._ensure_loaded()
@@ -376,7 +376,7 @@ class _GlobalConfigManager:
             if save:
                 self._save()
 
-    def section_delitem(self, parts: List[Any], key: Any, save: bool) -> None:
+    def section_delitem(self, parts: list[Any], key: Any, save: bool) -> None:
         with self._lock:
             self._ensure_loaded()
             d = self._section_dict(parts, create=False)
@@ -386,19 +386,19 @@ class _GlobalConfigManager:
             if save:
                 self._save()
 
-    def section_keys(self, parts: List[Any]) -> list:
+    def section_keys(self, parts: list[Any]) -> list:
         with self._lock:
             self._ensure_loaded()
             d = self._section_dict(parts, create=False)
             return [] if d is None else list(d.keys())
 
-    def section_contains(self, parts: List[Any], key: object) -> bool:
+    def section_contains(self, parts: list[Any], key: object) -> bool:
         with self._lock:
             self._ensure_loaded()
             d = self._section_dict(parts, create=False)
             return isinstance(d, dict) and key in d
 
-    def section_to_dict(self, parts: List[Any]) -> dict:
+    def section_to_dict(self, parts: list[Any]) -> dict:
         with self._lock:
             self._ensure_loaded()
             d = self._section_dict(parts, create=False)
@@ -410,9 +410,9 @@ class _ConfigRegistry:
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
-        self._managers: Dict[str, _GlobalConfigManager] = {}
+        self._managers: dict[str, _GlobalConfigManager] = {}
         # 显式指定的默认配置文件路径（None 表示走环境变量 / 默认路径）
-        self._default_path: Optional[str] = None
+        self._default_path: str | None = None
 
     def _config_dir(self) -> str:
         if self._default_path is not None:
@@ -473,7 +473,7 @@ class GlobalConfig(MutableMapping):
         '.../app.yaml'
     """
 
-    def __init__(self, manager: "_GlobalConfigManager", parts: List[Any],
+    def __init__(self, manager: "_GlobalConfigManager", parts: list[Any],
                  save_on_set: bool) -> None:
         self._manager = manager
         self._parts = list(parts)
@@ -534,7 +534,7 @@ class GlobalConfig(MutableMapping):
 _registry = _ConfigRegistry()
 
 
-def get_global(name: Optional[str] = None,
+def get_global(name: str | None = None,
                save_on_set: bool = True) -> GlobalConfig:
     """
     获取全局配置对象（可读可写）。
