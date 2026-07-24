@@ -180,6 +180,7 @@ def test_dict_like(cfg):
     app["b"] = 2
     assert dict(app) == {"a": 1, "b": 2}
     assert sorted(app.keys()) == ["a", "b"]
+    assert list(app.keys_view()) == app.keys()
     assert app.get("missing", "d") == "d"
     assert "a" in app and "missing" not in app
     assert app.has("a") and not app.has("missing")
@@ -609,3 +610,46 @@ def test_sync_disabled_persists_across_kicked_reset(sync_env, cfg):
     cfg.get_global("persist")  # 未指定 sync
     assert not config._sync.is_sync_enabled("persist")
     assert "persist" not in config._sync._scheduler.registered_names()
+
+
+# ── YAML 注释 ────────────────────────────────────────────────────────────────
+
+def test_scalar_comment_roundtrip(cfg):
+    app = cfg.get_global("app")
+    app["xx"] = 1
+    app["xx"].comment = "注释 abc"
+    assert app["xx"].comment == "注释 abc"
+    assert app["xx"] == 1
+    assert app["xx"].value == 1
+
+    app.reload()
+    assert app["xx"] == 1
+    assert app["xx"].comment == "注释 abc"
+
+    raw = open(app.path(), encoding="utf-8").read()
+    assert "注释 abc" in raw
+
+
+def test_read_existing_eol_comment(cfg):
+    app = cfg.get_global("app")
+    _write_file(app.path(), "xx: 1  # 注释 abc\n")
+    app.reload()
+    assert app["xx"] == 1
+    assert app["xx"].comment == "注释 abc"
+
+
+def test_nested_and_list_comment(cfg):
+    app = cfg.get_global("app")
+    app["sec"] = {"b": 2}
+    app["sec"].comment = "section"
+    app["sec"]["b"].comment = "b comment"
+    app["tags"] = ["x", "y"]
+    app["tags"].comment = "tag list"
+    app["tags"][0].comment = "item0"
+
+    app.reload()
+    assert app["sec"].comment == "section"
+    assert app["sec"]["b"].comment == "b comment"
+    assert app["tags"].comment == "tag list"
+    assert app["tags"][0].comment == "item0"
+    assert app["tags"][0] == "x"

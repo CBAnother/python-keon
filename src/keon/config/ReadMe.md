@@ -38,6 +38,8 @@ from keon import config
 
 app = config.get_global("app")
 app["theme"] = "dark"            # save_on_set=True 时立即落盘
+app["theme"].comment = "界面主题"
+assert app["theme"].comment == "界面主题"
 app["tags"] = ["x"]
 app["tags"].append("y")          # list 回写视图也会落盘
 

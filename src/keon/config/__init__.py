@@ -24,6 +24,7 @@ from .backends import RemoteConflictError, RemoteConfig
 from .local import (
     ConfigConflictError,
     ConfigList,
+    ConfigScalar,
     GlobalConfig,
     _ConfigRegistry,
     _DEFAULT_NAME,
@@ -208,6 +209,7 @@ __all__ = [
     "stop_auto_sync",
     "GlobalConfig",
     "ConfigList",
+    "ConfigScalar",
     "ConfigConflictError",
     "SyncConflictError",
     "RemoteConflictError",

@@ -1,5 +1,7 @@
 """
 本地配置：按名分文件的 YAML 读写、写时落盘、本地冲突检测、可写视图。
+
+使用 ruamel.yaml 以保留行尾注释；可通过 cfg["key"].comment 读写。
 """
 
 from __future__ import annotations
@@ -11,9 +13,11 @@ import tempfile
 import threading
 from collections.abc import MutableMapping, MutableSequence
 from datetime import datetime, timezone
+from io import StringIO
 from typing import Any
 
-import yaml
+from ruamel.yaml import YAML
+from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
 # 默认全局配置目录：用户主目录下的 .keon，方便机器上所有项目共享
 _DEFAULT_DIR = os.path.join(os.path.expanduser("~"), ".keon")
@@ -37,7 +41,7 @@ class ConfigConflictError(RuntimeError):
     """
     落盘时检测到配置文件已被其他程序修改，拒绝覆盖。
 
-    当前内存中的配置已另存为带时间戳的备份文件（``backup_path``），磁盘上的
+    当前内存中的配置已另存为带时间戳的备份文件（backup_path），磁盘上的
     配置文件保持其他程序写入的版本不变，便于之后手动合并。
 
     Attributes:
@@ -110,14 +114,45 @@ def _read_bytes(path: str) -> bytes | None:
         return None
 
 
+def _yaml_rt() -> YAML:
+    y = YAML(typ="rt")
+    y.preserve_quotes = True
+    y.default_flow_style = False
+    y.allow_unicode = True
+    y.width = 4096
+    return y
+
+
+def _to_plain(obj: Any) -> Any:
+    """CommentedMap/Seq → 普通 dict/list（不含注释）。"""
+    if isinstance(obj, dict):
+        return {k: _to_plain(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_to_plain(v) for v in obj]
+    return copy.deepcopy(obj)
+
+
+def _to_commented(obj: Any) -> Any:
+    """普通 dict/list → CommentedMap/Seq，便于挂注释。"""
+    if isinstance(obj, CommentedMap | CommentedSeq):
+        return obj
+    if isinstance(obj, dict):
+        out = CommentedMap()
+        for k, v in obj.items():
+            out[k] = _to_commented(v)
+        return out
+    if isinstance(obj, list):
+        out = CommentedSeq()
+        for v in obj:
+            out.append(_to_commented(v))
+        return out
+    return obj
+
+
 def _dump_yaml_bytes(data: dict) -> bytes:
-    text = yaml.safe_dump(
-        data,
-        allow_unicode=True,
-        sort_keys=False,
-        default_flow_style=False,
-    )
-    return text.encode("utf-8")
+    buf = StringIO()
+    _yaml_rt().dump(data, buf)
+    return buf.getvalue().encode("utf-8")
 
 
 def _atomic_write(path: str, data: bytes) -> None:
@@ -143,19 +178,82 @@ def _atomic_write(path: str, data: bytes) -> None:
         raise
 
 
-def _parse_mapping(raw: bytes | None, path: str) -> dict:
-    """解析 YAML 根节点为 dict；None / 空 -> {}。"""
-    if raw is None:
-        return {}
-    loaded = yaml.safe_load(raw.decode("utf-8"))
+def _parse_mapping(raw: bytes | None, path: str) -> CommentedMap:
+    """解析 YAML 根节点为 CommentedMap；None / 空 -> 空映射。"""
+    if raw is None or not raw.strip():
+        return CommentedMap()
+    loaded = _yaml_rt().load(raw.decode("utf-8"))
     if loaded is None:
-        return {}
+        return CommentedMap()
     if not isinstance(loaded, dict):
         raise ValueError(
             f"全局配置文件根节点必须是映射(dict)，实际为 "
             f"{type(loaded).__name__}: {path}"
         )
-    return loaded
+    if isinstance(loaded, CommentedMap):
+        return loaded
+    return _to_commented(loaded)
+
+
+def _token_comment_text(token: Any) -> str | None:
+    """从 ruamel CommentToken（或列表）提取不含 # 的注释正文。"""
+    if token is None:
+        return None
+    if isinstance(token, list):
+        parts = [p for t in token if (p := _token_comment_text(t)) is not None]
+        return "\n".join(parts) if parts else None
+    val = getattr(token, "value", None)
+    if not isinstance(val, str):
+        return None
+    lines: list[str] = []
+    for line in val.splitlines():
+        s = line.strip()
+        if s.startswith("#"):
+            s = s[1:].lstrip()
+        lines.append(s)
+    text = "\n".join(lines).strip("\n")
+    return text if text != "" else None
+
+
+def _read_eol_comment(parent: Any, key: Any) -> str | None:
+    ca = getattr(parent, "ca", None)
+    if ca is None:
+        return None
+    items = ca.items.get(key) if getattr(ca, "items", None) else None
+    if not items:
+        return None
+    # CommentedMap 行尾注释多在 [2]；CommentedSeq 多在 [0]
+    order = (0, 2, 1, 3) if isinstance(parent, list) else (2, 0, 1, 3)
+    for idx in order:
+        if idx < len(items) and items[idx] is not None:
+            text = _token_comment_text(items[idx])
+            if text is not None:
+                return text
+    return None
+
+
+def _write_eol_comment(parent: Any, key: Any, text: str | None) -> None:
+    if text is None or str(text).strip() == "":
+        ca = getattr(parent, "ca", None)
+        if ca is not None and getattr(ca, "items", None) is not None:
+            ca.items.pop(key, None)
+        return
+    body = str(text).strip()
+    if not hasattr(parent, "yaml_add_eol_comment"):
+        raise TypeError(
+            f"当前节点不支持注释：{type(parent).__name__}"
+        )
+    parent.yaml_add_eol_comment(body, key)
+
+
+def _unwrap_assign_value(value: Any) -> Any:
+    if isinstance(value, ConfigScalar):
+        return _to_commented(copy.deepcopy(value.value))
+    if isinstance(value, GlobalConfig):
+        return _to_commented(value.to_dict())
+    if isinstance(value, ConfigList):
+        return _to_commented(value.to_list())
+    return _to_commented(copy.deepcopy(value))
 
 
 class _GlobalConfigManager:
@@ -198,7 +296,7 @@ class _GlobalConfigManager:
             self._conflict_backup = None
 
     def bind_directory(self, directory: str) -> None:
-        """把本管理器绑到 ``{directory}/{name}.yaml``。"""
+        """把本管理器绑到 {directory}/{name}.yaml。"""
         with self._lock:
             self._path = os.path.join(
                 os.path.abspath(os.path.expanduser(directory)),
@@ -285,7 +383,7 @@ class _GlobalConfigManager:
     def snapshot(self) -> dict:
         with self._lock:
             self._ensure_loaded()
-            return copy.deepcopy(self._data)
+            return _to_plain(self._data)
 
     def status(self) -> dict:
         with self._lock:
@@ -320,12 +418,12 @@ class _GlobalConfigManager:
                 if part in cur:
                     nxt = cur[part]
                     if nxt is None and create_dicts and not is_last:
-                        nxt = {}
+                        nxt = CommentedMap()
                         cur[part] = nxt
                     cur = nxt
                     continue
                 if create_dicts:
-                    nxt = {} if not is_last else None
+                    nxt = CommentedMap() if not is_last else None
                     if not is_last:
                         cur[part] = nxt
                         cur = nxt
@@ -367,7 +465,7 @@ class _GlobalConfigManager:
             if isinstance(cur, dict):
                 if part not in cur or cur[part] is None:
                     # 下一级若是 int 键且像 list 下标，仍创建 dict（配置键均为 str）
-                    cur[part] = {}
+                    cur[part] = CommentedMap()
                 nxt = cur[part]
                 if not isinstance(nxt, (dict, list)):
                     raise ValueError(
@@ -399,7 +497,7 @@ class _GlobalConfigManager:
                     walked.append(part)
                     if isinstance(cur, dict):
                         if part not in cur or cur[part] is None:
-                            cur[part] = {}
+                            cur[part] = CommentedMap()
                         nxt = cur[part]
                         if not isinstance(nxt, dict):
                             raise ValueError(
@@ -439,7 +537,7 @@ class _GlobalConfigManager:
         """
         一次加锁读取：返回 (kind, value)。
 
-        kind: ``"dict"`` | ``"list"`` | ``"scalar"``；scalar 时 value 为深拷贝。
+        kind: "dict" | "list" | "scalar"；scalar 时 value 为深拷贝。
         """
         with self._lock:
             self._ensure_loaded()
@@ -468,12 +566,7 @@ class _GlobalConfigManager:
     ) -> None:
         with self._lock:
             self._ensure_loaded()
-            if isinstance(value, GlobalConfig):
-                value = value.to_dict()
-            elif isinstance(value, ConfigList):
-                value = value.to_list()
-            else:
-                value = copy.deepcopy(value)
+            value = _unwrap_assign_value(value)
             d = self._section_dict(parts, create=True)
             assert d is not None
             d[key] = value
@@ -488,13 +581,7 @@ class _GlobalConfigManager:
             d = self._section_dict(parts, create=True)
             assert d is not None
             for k, v in mapping.items():
-                if isinstance(v, GlobalConfig):
-                    v = v.to_dict()
-                elif isinstance(v, ConfigList):
-                    v = v.to_list()
-                else:
-                    v = copy.deepcopy(v)
-                d[k] = v
+                d[k] = _unwrap_assign_value(v)
             if save:
                 self._save()
 
@@ -534,7 +621,49 @@ class _GlobalConfigManager:
         with self._lock:
             self._ensure_loaded()
             d = self._section_dict(parts, create=False)
-            return {} if d is None else copy.deepcopy(d)
+            return {} if d is None else _to_plain(d)
+
+    def get_scalar_value(self, parts: list[Any]) -> Any:
+        with self._lock:
+            self._ensure_loaded()
+            val = self._walk(parts, create_dicts=False)
+            if isinstance(val, (dict, list)):
+                raise TypeError(
+                    f"路径 {parts!r} 不是标量，实际为 {type(val).__name__}"
+                )
+            return copy.deepcopy(val)
+
+    def get_key_comment(self, parts: list[Any]) -> str | None:
+        """返回 parts 所指键的行尾注释（不含 #）。根节点无注释。"""
+        with self._lock:
+            self._ensure_loaded()
+            if not parts:
+                return None
+            parent = self._walk(parts[:-1], create_dicts=False)
+            return _read_eol_comment(parent, parts[-1])
+
+    def set_key_comment(
+        self, parts: list[Any], text: str | None, save: bool
+    ) -> None:
+        with self._lock:
+            self._ensure_loaded()
+            if not parts:
+                raise ValueError("根配置不支持 .comment")
+            parent = self._walk(parts[:-1], create_dicts=False)
+            key = parts[-1]
+            # 确认键存在
+            if isinstance(parent, dict):
+                if key not in parent:
+                    raise KeyError(key)
+            elif isinstance(parent, list):
+                _ = parent[key]
+            else:
+                raise TypeError(
+                    f"无法为 {type(parent).__name__} 设置注释"
+                )
+            _write_eol_comment(parent, key, text)
+            if save:
+                self._save()
 
     # ── list 视图操作 ─────────────────────────────────────────────────────
 
@@ -560,13 +689,7 @@ class _GlobalConfigManager:
     def list_set(self, parts: list[Any], index: int, value: Any, save: bool) -> None:
         with self._lock:
             lst = self._list_at(parts)
-            if isinstance(value, GlobalConfig):
-                value = value.to_dict()
-            elif isinstance(value, ConfigList):
-                value = value.to_list()
-            else:
-                value = copy.deepcopy(value)
-            lst[index] = value
+            lst[index] = _unwrap_assign_value(value)
             if save:
                 self._save()
 
@@ -582,13 +705,7 @@ class _GlobalConfigManager:
     ) -> None:
         with self._lock:
             lst = self._list_at(parts)
-            if isinstance(value, GlobalConfig):
-                value = value.to_dict()
-            elif isinstance(value, ConfigList):
-                value = value.to_list()
-            else:
-                value = copy.deepcopy(value)
-            lst.insert(index, value)
+            lst.insert(index, _unwrap_assign_value(value))
             if save:
                 self._save()
 
@@ -598,7 +715,7 @@ class _GlobalConfigManager:
 
     def list_to_list(self, parts: list[Any]) -> list:
         with self._lock:
-            return copy.deepcopy(self._list_at(parts))
+            return _to_plain(self._list_at(parts))
 
     def list_sort(
         self, parts: list[Any], *, key=None, reverse: bool = False, save: bool = True
@@ -663,10 +780,11 @@ class _ConfigRegistry:
 
 class GlobalConfig(MutableMapping):
     """
-    :func:`get_global` 返回的可读可写配置对象，用起来就像普通 dict。
+    get_global 返回的可读可写配置对象，用起来就像普通 dict。
 
-    - ``save_on_set=True`` 时，每次赋值 / 删除都会立即落盘；
-    - 取到的 **dict** 仍是可写视图；**list** 返回 :class:`ConfigList` 回写视图；
+    - save_on_set=True 时，每次赋值 / 删除都会立即落盘；
+    - 取到的 dict 仍是可写视图；list 返回 ConfigList；
+      标量返回 ConfigScalar（可用 .comment / .value）；
     - 落盘前会检测文件是否被别的程序改过。
     """
 
@@ -681,7 +799,7 @@ class GlobalConfig(MutableMapping):
         self._save_on_set = bool(save_on_set)
 
     def __getitem__(self, key: Any) -> Any:
-        kind, val = self._manager.section_get(self._parts, key)
+        kind, _val = self._manager.section_get(self._parts, key)
         if kind == "dict":
             return GlobalConfig(
                 self._manager, self._parts + [key], self._save_on_set
@@ -690,7 +808,9 @@ class GlobalConfig(MutableMapping):
             return ConfigList(
                 self._manager, self._parts + [key], self._save_on_set
             )
-        return val
+        return ConfigScalar(
+            self._manager, self._parts + [key], self._save_on_set
+        )
 
     def __setitem__(self, key: Any, value: Any) -> None:
         self._manager.section_setitem(
@@ -717,8 +837,39 @@ class GlobalConfig(MutableMapping):
         self._manager.section_clear(self._parts, self._save_on_set)
 
     def has(self, key: object) -> bool:
-        """判断当前这一层是否存在 ``key``（等价于 ``key in cfg``）。"""
+        """判断当前这一层是否存在 key（等价于 key in cfg）。"""
         return key in self
+
+    def keys(self) -> list:  # type: ignore[override]
+        """
+        返回当前层键名的普通 list。
+
+        这里故意不返回 MutableMapping 默认的 KeysView：交互打印时
+        KeysView 会嵌套整份 GlobalConfig 的冗长 repr，看起来不像 dict。
+        需要标准视图时用 keys_view()。
+
+            >>> cfg.keys()       # ['theme', 'default_slot']
+            >>> cfg.keys_view()  # KeysView(...)
+        """
+        return self._manager.section_keys(self._parts)
+
+    def keys_view(self):
+        """
+        返回标准的 KeysView（与 collections.abc.Mapping.keys 相同）。
+
+        一般查看键名请用 keys()；本方法留给需要视图语义
+        （随映射变化、可做集合运算等）的场景。
+        """
+        return super().keys()
+
+    @property
+    def comment(self) -> str | None:
+        """本节点在父级中的行尾注释（根配置为 None）。"""
+        return self._manager.get_key_comment(self._parts)
+
+    @comment.setter
+    def comment(self, text: str | None) -> None:
+        self._manager.set_key_comment(self._parts, text, self._save_on_set)
 
     def path(self) -> str:
         """返回本配置实例对应的 YAML 文件路径。"""
@@ -754,8 +905,74 @@ class GlobalConfig(MutableMapping):
         )
 
 
+class ConfigScalar:
+    """
+    标量配置值的包装：可用 == / .value 取值，用 .comment 读写行尾注释。
+
+    Example:
+        >>> cfg["xx"] = 1
+        >>> cfg["xx"].comment = "注释 abc"
+        >>> cfg["xx"].comment
+        '注释 abc'
+        >>> cfg["xx"] == 1
+        True
+    """
+
+    def __init__(
+        self,
+        manager: _GlobalConfigManager,
+        parts: list[Any],
+        save_on_set: bool,
+    ) -> None:
+        self._manager = manager
+        self._parts = list(parts)
+        self._save_on_set = bool(save_on_set)
+
+    @property
+    def value(self) -> Any:
+        """底层 Python 标量。"""
+        return self._manager.get_scalar_value(self._parts)
+
+    @property
+    def comment(self) -> str | None:
+        return self._manager.get_key_comment(self._parts)
+
+    @comment.setter
+    def comment(self, text: str | None) -> None:
+        self._manager.set_key_comment(self._parts, text, self._save_on_set)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, ConfigScalar):
+            return self.value == other.value
+        return self.value == other
+
+    def __ne__(self, other: object) -> bool:
+        return not self.__eq__(other)
+
+    def __hash__(self) -> int:
+        return hash(self.value)
+
+    def __bool__(self) -> bool:
+        return bool(self.value)
+
+    def __str__(self) -> str:
+        return str(self.value)
+
+    def __repr__(self) -> str:
+        return f"ConfigScalar({self.value!r})"
+
+    def __int__(self) -> int:
+        return int(self.value)
+
+    def __float__(self) -> float:
+        return float(self.value)
+
+    def __index__(self) -> int:
+        return self.value.__index__()
+
+
 class ConfigList(MutableSequence):
-    """list 可写回写视图：原地修改会写回配置并按 ``save_on_set`` 落盘。"""
+    """list 可写回写视图：原地修改会写回配置并按 save_on_set 落盘。"""
 
     def __init__(
         self,
@@ -770,7 +987,7 @@ class ConfigList(MutableSequence):
     def __getitem__(self, index):
         if isinstance(index, slice):
             return self.to_list()[index]
-        kind, val = self._manager.list_get(self._parts, index)
+        kind, _val = self._manager.list_get(self._parts, index)
         if kind == "dict":
             return GlobalConfig(
                 self._manager, self._parts + [index], self._save_on_set
@@ -779,7 +996,9 @@ class ConfigList(MutableSequence):
             return ConfigList(
                 self._manager, self._parts + [index], self._save_on_set
             )
-        return val
+        return ConfigScalar(
+            self._manager, self._parts + [index], self._save_on_set
+        )
 
     def __setitem__(self, index, value) -> None:
         if isinstance(index, slice):
@@ -801,6 +1020,15 @@ class ConfigList(MutableSequence):
         self._manager.list_sort(
             self._parts, key=key, reverse=reverse, save=self._save_on_set
         )
+
+    @property
+    def comment(self) -> str | None:
+        """本 list 在父级中的行尾注释。"""
+        return self._manager.get_key_comment(self._parts)
+
+    @comment.setter
+    def comment(self, text: str | None) -> None:
+        self._manager.set_key_comment(self._parts, text, self._save_on_set)
 
     def to_list(self) -> list:
         """返回普通 list 深拷贝（脱离视图）。"""
