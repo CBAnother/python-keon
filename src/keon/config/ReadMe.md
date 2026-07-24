@@ -72,7 +72,8 @@ config.set_s3(
 之后业务代码无需再 `set_s3`：
 
 ```python
-app = config.get_global("app")   # 有凭证则后台限频同步
+app = config.get_global("app")              # 有凭证则后台限频同步
+local_only = config.get_global("secret", sync=False)  # 仅本地，不同步
 ```
 
 可选显式控制：
@@ -92,7 +93,7 @@ config.stop_auto_sync()
 
 | 符号 | 说明 |
 |---|---|
-| `get_global(name=None, save_on_set=True)` | 唯一读写入口 |
+| `get_global(name=None, save_on_set=True, sync=None)` | 唯一读写入口；`sync=False` 仅本地（持久化到状态文件，需 `sync=True` 才恢复） |
 | `set_path(path)` | 指定默认配置路径 |
 | `set_s3(...)` | 一次性配置 S3 / MinIO |
 | `init` / `sync` | 可选显式同步 |

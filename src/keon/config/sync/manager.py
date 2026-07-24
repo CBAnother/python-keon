@@ -156,23 +156,58 @@ class SyncManager:
             return
         # 登记已有管理器
         for name in self._registry.known_names():
+            if not self.is_sync_enabled(name):
+                continue
             self._scheduler.register(name, due_immediately=False)
         self._scheduler.ensure_running()
 
     def stop_auto_sync(self) -> None:
         self._scheduler.stop()
 
-    def on_get_global(self, name: str) -> None:
-        """get_global 挂钩：有凭证则登记并限频后台检查。"""
+    def on_get_global(self, name: str, *, sync: bool | None = None) -> None:
+        """
+        get_global 挂钩。
+
+        - ``sync=False``：禁用该 name 同步并写入状态文件（跨进程持久）
+        - ``sync=True``：强制重新启用并登记
+        - ``sync=None``（未指定）：读状态文件；已禁用则保持，否则登记同步
+        """
+        if sync is False:
+            self._persist_sync_enabled(name, False)
+            self._scheduler.unregister(name)
+            self._kicked.discard(name)
+            return
+
+        if sync is True:
+            self._persist_sync_enabled(name, True)
+        elif not self.is_sync_enabled(name):
+            return
+
         if self._runtime.ensure_s3_loaded() is None:
             return
         first = name not in self._kicked
         self._scheduler.register(name, due_immediately=first)
         if first:
             self._kicked.add(name)
-            # 跨进程节流：若间隔内已检查则不 kick
             if not self._throttled(name):
                 self._scheduler.kick(name)
+
+    def is_sync_enabled(self, name: str) -> bool:
+        """是否允许同步（读 `.config_sync_state.json`，默认 True）。"""
+        try:
+            return bool(self._state_store().get_entry(name).sync_enabled)
+        except Exception:
+            return True
+
+    def _persist_sync_enabled(self, name: str, enabled: bool) -> None:
+        settings = self._runtime.s3_settings or self._runtime.ensure_s3_loaded()
+        bucket = settings.bucket if settings else None
+        prefix = settings.key_prefix if settings else None
+
+        def mut(state):
+            state.entry(name).sync_enabled = enabled
+
+        self._state_store().update(mut, bucket=bucket, key_prefix=prefix)
 
     def _throttled(self, name: str, *, force: bool = False) -> bool:
         if force:
@@ -205,8 +240,16 @@ class SyncManager:
             )
             if not names:
                 names = [_DEFAULT_NAME]
+            names = [n for n in names if self.is_sync_enabled(n)]
         else:
             names = [_validate_name(name)]
+            if not self.is_sync_enabled(names[0]) and not force:
+                logger.info(
+                    "配置 %s 已 get_global(sync=False)，跳过 sync；"
+                    "可用 sync(force=True) 或 get_global(sync=True) 后再同步",
+                    names[0],
+                )
+                return
 
         for n in names:
             self._scheduler.register(n, due_immediately=False)
@@ -262,6 +305,10 @@ class SyncManager:
     def _sync_one_impl(
         self, name: str, *, force: bool, interactive: bool
     ) -> None:
+        if not self.is_sync_enabled(name) and not force:
+            logger.debug("配置 %s 已禁用同步，跳过", name)
+            return
+
         backend = self._runtime.get_backend()
         if backend is None:
             return
@@ -711,4 +758,5 @@ class SyncManager:
         except Exception:
             pass
         st["s3_configured"] = self._runtime.ensure_s3_loaded() is not None
+        st["sync_enabled"] = self.is_sync_enabled(name)
         return st

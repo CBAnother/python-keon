@@ -57,6 +57,11 @@ class SyncScheduler:
         self._wake.set()
         self.ensure_running()
 
+    def unregister(self, name: str) -> None:
+        """从调度表移除（不再自动同步）。"""
+        with self._lock:
+            self._due.pop(name, None)
+
     def registered_names(self) -> list[str]:
         with self._lock:
             return list(self._due.keys())

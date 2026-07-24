@@ -44,18 +44,27 @@ _registry = _ConfigRegistry()
 _sync = SyncManager(_registry)
 
 
-def get_global(name: str | None = None, save_on_set: bool = True) -> GlobalConfig:
+def get_global(
+    name: str | None = None,
+    save_on_set: bool = True,
+    *,
+    sync: bool | None = None,
+) -> GlobalConfig:
     """
     获取全局配置对象（可读可写）。
 
     - ``get_global()``      返回默认配置（``config.yaml``）；
     - ``get_global("app")`` 返回独立配置文件 ``app.yaml``。
 
-    有 S3 凭证时：立刻返回本地配置，并登记到后台调度线程做限频同步。
+    有 S3 凭证时默认会登记后台同步。``sync=False`` 禁用该 name 的云端同步
+    （写入 ``.config_sync_state.json``，跨进程持久；同进程内其它未指定
+    ``sync`` 的 ``get_global`` 不会重新开启；需显式 ``sync=True`` 才恢复）。
 
     Args:
         name: 配置名；``None`` 表示默认名 ``config``。
         save_on_set: 为 True（默认）时每次赋值/删除立即落盘。
+        sync: ``None``（默认）沿用当前策略；``False`` 禁用同步；
+            ``True`` 强制启用同步。
 
     Returns:
         GlobalConfig: 可读可写的配置对象。
@@ -65,7 +74,7 @@ def get_global(name: str | None = None, save_on_set: bool = True) -> GlobalConfi
     else:
         resolved = _validate_name(name)
     cfg = _registry.get_manager(resolved).get_config(save_on_set)
-    _sync.on_get_global(resolved)
+    _sync.on_get_global(resolved, sync=sync)
     return cfg
 
 

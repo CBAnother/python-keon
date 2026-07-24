@@ -565,3 +565,47 @@ def test_noop_when_unchanged(sync_env, cfg):
     rev1 = sync_env.get("app").revision
     config.sync(force=True, wait=True, name="app")
     assert sync_env.get("app").revision == rev1
+
+
+def test_get_global_sync_false_skips(sync_env, cfg):
+    local = cfg.get_global("localonly", sync=False)
+    local["secret"] = 1
+    assert local.status()["sync_enabled"] is False
+    assert "localonly" not in config._sync._scheduler.registered_names()
+
+    # 已写入状态文件
+    entry = config._sync._state_store().get_entry("localonly")
+    assert entry.sync_enabled is False
+
+    config.sync(force=False, wait=True, name="localonly")
+    assert sync_env.get("localonly") is None
+
+    # force 仍可手动推一把
+    config.sync(force=True, wait=True, name="localonly")
+    assert sync_env.get("localonly") is not None
+    assert "secret" in sync_env.get("localonly").content
+
+
+def test_get_global_sync_true_reenable(sync_env, cfg):
+    cfg.get_global("tog", sync=False)
+    assert not config._sync.is_sync_enabled("tog")
+    # 未指定 sync：保持禁用
+    cfg.get_global("tog")
+    assert not config._sync.is_sync_enabled("tog")
+    assert "tog" not in config._sync._scheduler.registered_names()
+    # 显式 sync=True 才恢复
+    cfg.get_global("tog", sync=True)
+    assert config._sync.is_sync_enabled("tog")
+    assert config._sync._state_store().get_entry("tog").sync_enabled is True
+    assert "tog" in config._sync._scheduler.registered_names()
+
+
+def test_sync_disabled_persists_across_kicked_reset(sync_env, cfg):
+    """模拟新进程：清空内存 kicked，仍应从状态文件读到禁用。"""
+    cfg.get_global("persist", sync=False)
+    config._sync._kicked.clear()
+    config._sync._scheduler.unregister("persist")
+
+    cfg.get_global("persist")  # 未指定 sync
+    assert not config._sync.is_sync_enabled("persist")
+    assert "persist" not in config._sync._scheduler.registered_names()

@@ -27,11 +27,14 @@ class LocalSyncStateEntry:
     last_sync_meta_etag: str | None = None
     conflict: bool = False
     paused: bool = False
+    sync_enabled: bool = True  # get_global(sync=False) 持久化
 
     @classmethod
     def from_dict(cls, d: dict[str, Any] | None) -> LocalSyncStateEntry:
         if not d:
             return cls()
+        # 缺省字段视为 True，兼容旧状态文件
+        sync_enabled = d.get("sync_enabled", True)
         return cls(
             last_success_sync_time=d.get("last_success_sync_time"),
             last_check_time=d.get("last_check_time"),
@@ -40,6 +43,7 @@ class LocalSyncStateEntry:
             last_sync_meta_etag=d.get("last_sync_meta_etag"),
             conflict=bool(d.get("conflict", False)),
             paused=bool(d.get("paused", False)),
+            sync_enabled=bool(sync_enabled) if sync_enabled is not None else True,
         )
 
     def to_dict(self) -> dict[str, Any]:
