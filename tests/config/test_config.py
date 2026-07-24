@@ -1,19 +1,32 @@
-"""Tests for keon.config (named per-file get_global, local step)."""
+"""Tests for keon.config (named per-file get_global, local + sync)."""
 
 import os
+import threading
+import time
 
 import pytest
 import yaml
 
 from keon import config
+from keon.config.backends import MemoryBackend
 
 
 @pytest.fixture
 def cfg(tmp_path):
     """把全局配置指向临时目录，避免污染真实的 ~/.keon/。"""
+    config.stop_auto_sync()
     config.set_path(str(tmp_path / "config.yaml"))
-    config.reload()
-    return config
+    # 重置同步运行期，避免跨测试污染；标记已尝试加载以免读真实 s3.yaml
+    rt = config._sync.runtime
+    rt.s3_settings = None
+    rt.s3_loaded_attempted = True
+    rt.backend_override = None
+    rt._backend = None
+    config._sync._kicked.clear()
+    config.get_global().reload()
+    yield config
+    config.stop_auto_sync()
+    rt.backend_override = None
 
 
 def _write_file(path, text):
@@ -40,8 +53,6 @@ def test_env_var_overrides_default_path(monkeypatch, tmp_path):
 
 def test_named_path_beside_default(monkeypatch, tmp_path):
     monkeypatch.delenv("KEON_CONFIG_PATH", raising=False)
-    # 通过 registry：默认在 ~/.keon，具名同目录
-    # 用临时 set_path 验证具名落在同目录
     config.set_path(str(tmp_path / "config.yaml"))
     app = config.get_global("app")
     assert app.path() == os.path.join(str(tmp_path), "app.yaml")
@@ -51,7 +62,7 @@ def test_named_path_beside_default(monkeypatch, tmp_path):
 def test_set_path_wins_over_env(monkeypatch, tmp_path):
     monkeypatch.setenv("KEON_CONFIG_PATH", str(tmp_path / "env.yaml"))
     config.set_path(str(tmp_path / "explicit.yaml"))
-    assert config.path() == os.path.abspath(str(tmp_path / "explicit.yaml"))
+    assert config.get_global().path() == os.path.abspath(str(tmp_path / "explicit.yaml"))
     assert config.get_global("app").path() == os.path.join(
         str(tmp_path), "app.yaml"
     )
@@ -86,7 +97,6 @@ def test_same_name_shares_instance_file(cfg):
 
 
 def test_get_global_config_alias(cfg):
-    # get_global() 与 get_global("config") 指向同一默认文件
     root = cfg.get_global()
     named = cfg.get_global("config")
     assert root.path() == named.path()
@@ -121,7 +131,7 @@ def test_write_persists_immediately(cfg):
 def test_root_config(cfg):
     root = cfg.get_global()
     root["top"] = {"a": 1}
-    cfg.reload()
+    cfg.get_global().reload()
     assert cfg.get_global().get("top") == {"a": 1}
 
 
@@ -155,6 +165,15 @@ def test_nested_view_is_not_detached_copy(cfg):
     assert app["a"]["b"] == 2
 
 
+def test_list_append_persists(cfg):
+    app = cfg.get_global("app")
+    app["tags"] = ["a", "b"]
+    app["tags"].append("c")
+    assert app["tags"].to_list() == ["a", "b", "c"]
+    app.reload()
+    assert cfg.get_global("app")["tags"].to_list() == ["a", "b", "c"]
+
+
 def test_dict_like(cfg):
     app = cfg.get_global("app", save_on_set=False)
     app["a"] = 1
@@ -166,11 +185,19 @@ def test_dict_like(cfg):
     assert app.has("a") and not app.has("missing")
 
 
+def test_update_saves_once(cfg):
+    app = cfg.get_global("app")
+    app.update({"m": 1, "n": 2, "o": 3})
+    assert app.to_dict() == {"m": 1, "n": 2, "o": 3}
+    app.reload()
+    assert cfg.get_global("app").to_dict() == {"m": 1, "n": 2, "o": 3}
+
+
 def test_cfg_path(cfg):
     root = cfg.get_global()
     app = cfg.get_global("app")
-    assert root.path() == cfg.path()
-    assert app.path() != cfg.path()
+    assert root.path() == cfg.get_global().path()
+    assert app.path() != cfg.get_global().path()
     assert os.path.isabs(root.path())
     assert os.path.isabs(app.path())
 
@@ -280,11 +307,11 @@ def test_reload_clears_conflict_then_write_ok(cfg):
 def test_status_reports_external_change(cfg):
     root = cfg.get_global()
     root["x"] = 1
-    st = cfg.status()
+    st = root.status()
     assert st["external_change"] is False
 
-    _write_file(cfg.path(), "x: 999\n")
-    st = cfg.status()
+    _write_file(root.path(), "x: 999\n")
+    st = root.status()
     assert st["external_change"] is True
 
 
@@ -293,7 +320,7 @@ def test_status_reports_external_change(cfg):
 def test_snapshot_is_deep_copy(cfg):
     root = cfg.get_global()
     root["a"] = {"b": 1}
-    snap = cfg.snapshot()
+    snap = root.snapshot()
     snap["a"]["b"] = 999
     assert cfg.get_global()["a"]["b"] == 1
 
@@ -308,6 +335,11 @@ def test_empty_name_raises(cfg):
 def test_non_string_name_raises(cfg):
     with pytest.raises(TypeError):
         cfg.get_global(123)
+
+
+def test_name_too_long_raises(cfg):
+    with pytest.raises(ValueError):
+        cfg.get_global("a" * 256)
 
 
 @pytest.mark.parametrize("bad", [
@@ -335,13 +367,201 @@ def test_illegal_name_raises(cfg, bad):
 
 
 def test_invalid_root_raises(cfg):
-    _write_file(cfg.path(), "- just\n- a\n- list\n")
+    _write_file(cfg.get_global().path(), "- just\n- a\n- list\n")
     with pytest.raises(ValueError):
-        cfg.reload()
+        cfg.get_global().reload()
 
 
 def test_empty_file_is_empty_config(cfg):
-    _write_file(cfg.path(), "")
-    cfg.reload()
-    assert cfg.snapshot() == {}
+    _write_file(cfg.get_global().path(), "")
+    cfg.get_global().reload()
+    assert cfg.get_global().snapshot() == {}
     assert cfg.get_global("anything").to_dict() == {}
+
+
+# ── S3 / 同步（MemoryBackend）────────────────────────────────────────────────
+
+@pytest.fixture
+def sync_env(cfg, tmp_path):
+    """注入 MemoryBackend，并写入假凭证。"""
+    config.stop_auto_sync()
+    backend = MemoryBackend()
+    config.set_s3(
+        endpoint_url="http://127.0.0.1:9000",
+        bucket="test-bucket",
+        access_key="ak",
+        secret_key="sk",
+        key_prefix="configs",
+        persist=True,
+        cred_path=str(tmp_path / "s3.yaml"),
+    )
+    config._sync.runtime.backend_override = backend
+    config._sync._kicked.clear()
+    config.init(conflict_mode="raise", sync_interval=3600)
+    return backend
+
+
+def test_set_s3_persists(cfg, tmp_path):
+    cred = tmp_path / "s3.yaml"
+    config.set_s3(
+        endpoint_url="http://127.0.0.1:9000",
+        bucket="b",
+        access_key="ak",
+        secret_key="sk",
+        key_prefix="/keon-configs/",
+        persist=True,
+        cred_path=str(cred),
+    )
+    assert cred.is_file()
+    data = yaml.safe_load(cred.read_text(encoding="utf-8"))
+    assert data["bucket"] == "b"
+    assert data["key_prefix"] == "keon-configs"  # 归一化
+
+
+def test_set_s3_default_key_prefix(cfg, tmp_path):
+    cred = tmp_path / "s3.yaml"
+    config.set_s3(
+        endpoint_url="http://127.0.0.1:9000",
+        bucket="b",
+        access_key="ak",
+        secret_key="sk",
+        persist=True,
+        cred_path=str(cred),
+    )
+    data = yaml.safe_load(cred.read_text(encoding="utf-8"))
+    assert data["key_prefix"] == "keon-configs"
+
+
+def test_upload_on_first_sync(sync_env, cfg):
+    app = cfg.get_global("app")
+    app["theme"] = "dark"
+    config.sync(force=True, wait=True, name="app")
+    remote = sync_env.get("app")
+    assert remote is not None
+    assert "dark" in remote.content
+    st = app.status()
+    assert st["last_sync_sha256"] is not None
+    assert st["sync_conflict"] is False
+
+
+def test_download_when_only_remote_changed(sync_env, cfg):
+    app = cfg.get_global("app")
+    app["theme"] = "light"
+    config.sync(force=True, wait=True, name="app")
+
+    # 远端被另一端改掉
+    sync_env.put(
+        "app",
+        "theme: dark\n",
+        expected_etag=sync_env.get_meta("app")[1],
+        create_only=False,
+    )
+    # 本地保持 base（未改）
+    config.sync(force=True, wait=True, name="app")
+    app.reload()
+    assert app["theme"] == "dark"
+
+
+def test_conflict_when_both_changed(sync_env, cfg):
+    app = cfg.get_global("app")
+    app["theme"] = "light"
+    config.sync(force=True, wait=True, name="app")
+
+    sync_env.put(
+        "app",
+        "theme: remote\n",
+        expected_etag=sync_env.get_meta("app")[1],
+        create_only=False,
+    )
+    app["theme"] = "local"
+
+    with pytest.raises(config.SyncConflictError):
+        config.sync(force=True, wait=True, name="app")
+
+    st = app.status()
+    assert st["sync_conflict"] is True
+    assert st["sync_paused"] is True
+    cdir = os.path.join(
+        os.path.dirname(app.path()), ".config_conflict", "app"
+    )
+    assert os.path.isfile(os.path.join(cdir, "local.yaml"))
+    assert os.path.isfile(os.path.join(cdir, "remote.yaml"))
+
+
+def test_resolve_use_local(sync_env, cfg):
+    app = cfg.get_global("app")
+    app["theme"] = "light"
+    config.sync(force=True, wait=True, name="app")
+    sync_env.put(
+        "app",
+        "theme: remote\n",
+        expected_etag=sync_env.get_meta("app")[1],
+        create_only=False,
+    )
+    app["theme"] = "local"
+    with pytest.raises(config.SyncConflictError):
+        config.sync(force=True, wait=True, name="app")
+
+    config.resolve_conflict("app", "use_local")
+    remote = sync_env.get("app")
+    assert "local" in remote.content
+    st = app.status()
+    assert st["sync_conflict"] is False
+
+
+def test_resolve_use_remote(sync_env, cfg):
+    app = cfg.get_global("app")
+    app["theme"] = "light"
+    config.sync(force=True, wait=True, name="app")
+    sync_env.put(
+        "app",
+        "theme: remote\n",
+        expected_etag=sync_env.get_meta("app")[1],
+        create_only=False,
+    )
+    app["theme"] = "local"
+    with pytest.raises(config.SyncConflictError):
+        config.sync(force=True, wait=True, name="app")
+
+    config.resolve_conflict("app", "use_remote")
+    app.reload()
+    assert app["theme"] == "remote"
+
+
+def test_on_update_callback(sync_env, cfg):
+    updated = []
+    config.set_on_update(lambda n: updated.append(n))
+    app = cfg.get_global("app")
+    app["theme"] = "light"
+    config.sync(force=True, wait=True, name="app")
+
+    sync_env.put(
+        "app",
+        "theme: dark\n",
+        expected_etag=sync_env.get_meta("app")[1],
+        create_only=False,
+    )
+    config.sync(force=True, wait=True, name="app")
+    assert "app" in updated
+
+
+def test_cas_conflict(sync_env, cfg):
+    app = cfg.get_global("app")
+    app["v"] = 1
+    config.sync(force=True, wait=True, name="app")
+    etag = sync_env.get_meta("app")[1]
+    # 模拟他端先写
+    sync_env.put("app", "v: 9\n", expected_etag=etag, create_only=False)
+    app["v"] = 2
+    # 本地相对 base 变了，远端也变了 → 双方冲突（不是纯 CAS）
+    with pytest.raises(config.SyncConflictError):
+        config.sync(force=True, wait=True, name="app")
+
+
+def test_noop_when_unchanged(sync_env, cfg):
+    app = cfg.get_global("app")
+    app["x"] = 1
+    config.sync(force=True, wait=True, name="app")
+    rev1 = sync_env.get("app").revision
+    config.sync(force=True, wait=True, name="app")
+    assert sync_env.get("app").revision == rev1

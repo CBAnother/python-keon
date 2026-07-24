@@ -20,6 +20,8 @@ dependencies = [
   'requests',
   'pyyaml',
   'pypdf',
+  'boto3',
+  'filelock',
   'pywin32; platform_system == "Windows"',
 ]
 
